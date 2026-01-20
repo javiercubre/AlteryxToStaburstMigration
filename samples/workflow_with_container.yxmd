@@ -1,0 +1,148 @@
+<?xml version="1.0"?>
+<AlteryxDocument yxmdVer="2023.1">
+  <Properties>
+    <MetaInfo>
+      <Name>Sales Report with Container</Name>
+      <Description>Workflow with tool container for organization</Description>
+      <Author>Data Team</Author>
+    </MetaInfo>
+  </Properties>
+  <Nodes>
+    <!-- Input: Sales Data -->
+    <Node ToolID="1">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.DbFileInput.DbFileInput">
+        <Position x="54" y="54"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Sales Data</Name>
+        </Annotation>
+        <Configuration>
+          <File>\\data\raw\sales.csv</File>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Tool Container: Data Prep -->
+    <Node ToolID="100">
+      <GuiSettings Plugin="AlteryxGuiToolkit.ToolContainer.ToolContainer">
+        <Position x="200" y="50"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Data Preparation</Name>
+        </Annotation>
+        <Configuration>
+          <ChildToolIds>2,3,4</ChildToolIds>
+          <Disabled>False</Disabled>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Filter inside container -->
+    <Node ToolID="2">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.Filter.Filter">
+        <Position x="174" y="54"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Filter Valid Sales</Name>
+        </Annotation>
+        <Configuration>
+          <Expression>[amount] > 0</Expression>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Formula inside container -->
+    <Node ToolID="3">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.Formula.Formula">
+        <Position x="294" y="54"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Calculate Tax</Name>
+        </Annotation>
+        <Configuration>
+          <FormulaField field="tax_amount" expression="[amount] * 0.08" type="Double"/>
+          <FormulaField field="total_with_tax" expression="[amount] + [tax_amount]" type="Double"/>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Select inside container -->
+    <Node ToolID="4">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.AlteryxSelect.AlteryxSelect">
+        <Position x="414" y="54"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Select Final Fields</Name>
+        </Annotation>
+        <Configuration>
+          <SelectField field="sale_id" selected="True"/>
+          <SelectField field="customer_id" selected="True"/>
+          <SelectField field="amount" selected="True"/>
+          <SelectField field="tax_amount" selected="True"/>
+          <SelectField field="total_with_tax" selected="True"/>
+          <SelectField field="sale_date" selected="True"/>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Summarize outside container -->
+    <Node ToolID="5">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.Summarize.Summarize">
+        <Position x="534" y="54"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Sales Summary</Name>
+        </Annotation>
+        <Configuration>
+          <SummarizeField field="customer_id" action="GroupBy"/>
+          <SummarizeField field="total_with_tax" action="Sum" rename="total_sales"/>
+          <SummarizeField field="sale_id" action="Count" rename="num_transactions"/>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Output -->
+    <Node ToolID="6">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.DbFileOutput.DbFileOutput">
+        <Position x="654" y="54"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Customer Sales Summary</Name>
+        </Annotation>
+        <Configuration>
+          <File>\\data\output\customer_sales_summary.csv</File>
+        </Configuration>
+      </Properties>
+    </Node>
+  </Nodes>
+
+  <Connections>
+    <Connection>
+      <Origin ToolID="1" Connection="Output"/>
+      <Destination ToolID="2" Connection="Input"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="2" Connection="True"/>
+      <Destination ToolID="3" Connection="Input"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="3" Connection="Output"/>
+      <Destination ToolID="4" Connection="Input"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="4" Connection="Output"/>
+      <Destination ToolID="5" Connection="Input"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="5" Connection="Output"/>
+      <Destination ToolID="6" Connection="Input"/>
+    </Connection>
+  </Connections>
+</AlteryxDocument>

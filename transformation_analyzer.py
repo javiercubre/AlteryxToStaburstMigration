@@ -415,8 +415,16 @@ class TransformationAnalyzer:
         }
 
         for node in self.workflow.nodes:
+            # Skip containers - they don't process data
+            if node.category == ToolCategory.CONTAINER:
+                continue
+
             is_final = not self.downstream.get(node.tool_id)
             layer = get_medallion_layer(node.category, is_final)
+
+            # Skip if layer is None (e.g., containers)
+            if layer is None:
+                continue
 
             # Adjust layer based on position in workflow
             if node.category == ToolCategory.TRANSFORM:

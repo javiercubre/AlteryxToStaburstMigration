@@ -108,6 +108,10 @@ PLUGIN_CATEGORY_MAP = {
     "AlteryxBasePluginsGui.Message.Message": ToolCategory.DEVELOPER,
     "AlteryxBasePluginsGui.Test.Test": ToolCategory.DEVELOPER,
     "AlteryxBasePluginsGui.Block.BlockUntilDone": ToolCategory.DEVELOPER,
+
+    # Tool Containers (organization only - not data processing)
+    "AlteryxGuiToolkit.ToolContainer.ToolContainer": ToolCategory.CONTAINER,
+    "AlteryxBasePluginsGui.ControlContainer.ControlContainer": ToolCategory.CONTAINER,
 }
 
 # Simplified tool names from plugin paths
@@ -197,6 +201,10 @@ PLUGIN_NAME_MAP = {
     "Message": "Message",
     "Test": "Test",
     "BlockUntilDone": "Block Until Done",
+
+    # Containers
+    "ToolContainer": "Tool Container",
+    "ControlContainer": "Control Container",
 }
 
 # Trino SQL/DBT equivalents for Alteryx tools
@@ -359,6 +367,7 @@ MEDALLION_LAYER_MAP = {
     ToolCategory.IN_DATABASE: MedallionLayer.SILVER,
     ToolCategory.REPORTING: MedallionLayer.GOLD,
     ToolCategory.MACRO: MedallionLayer.SILVER,
+    ToolCategory.CONTAINER: None,  # Containers don't process data - skip them
     ToolCategory.UNKNOWN: MedallionLayer.SILVER,
 }
 

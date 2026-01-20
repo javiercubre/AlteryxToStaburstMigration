@@ -249,17 +249,58 @@ class DBTGenerator:
         return "raw"
 
     def _get_table_name(self, node: AlteryxNode) -> str:
-        """Determine table name from source node."""
+        """Determine table name from source node - prioritize meaningful names."""
+        # Priority 1: Explicit table name
         if node.table_name:
             return self._sanitize_name(node.table_name)
 
+        # Priority 2: File name from source path
         if node.source_path:
             return self._sanitize_name(Path(node.source_path).stem)
 
-        return f"source_{node.tool_id}"
+        # Priority 3: Annotation (user-defined name)
+        if node.annotation:
+            return self._sanitize_name(node.annotation)
+
+        # Priority 4: Extract from SQL query (e.g., "FROM schema.table_name")
+        if node.sql_query:
+            table_from_sql = self._extract_table_from_sql(node.sql_query)
+            if table_from_sql:
+                return self._sanitize_name(table_from_sql)
+
+        # Priority 5: Use display name if meaningful
+        display = node.get_display_name()
+        if display and display != node.plugin_name:
+            # Extract just the annotation part if present
+            if ':' in display:
+                name = display.split(':', 1)[1].strip()
+                return self._sanitize_name(name)
+
+        # Fallback: Use a descriptive name based on tool type
+        return f"{self._sanitize_name(node.plugin_name)}_{node.tool_id}"
+
+    def _extract_table_from_sql(self, sql: str) -> Optional[str]:
+        """Extract table name from SQL query."""
+        if not sql:
+            return None
+
+        # Look for "FROM schema.table" or "FROM table"
+        match = re.search(r'\bFROM\s+([^\s,()]+)', sql, re.IGNORECASE)
+        if match:
+            table_ref = match.group(1).strip('[]"\'`')
+            # Get last part if qualified (schema.table)
+            if '.' in table_ref:
+                return table_ref.split('.')[-1]
+            return table_ref
+
+        return None
 
     def _get_descriptive_gold_name(self, node: AlteryxNode, workflow: AlteryxWorkflow) -> str:
         """Generate a descriptive name for gold layer models based on actual output."""
+        # Skip containers - use children's info instead
+        if node.category == ToolCategory.CONTAINER:
+            return self._get_container_descriptive_name(node, workflow)
+
         # Priority 1: Use target table name or file name
         if node.target_path:
             name = Path(node.target_path).stem
@@ -287,8 +328,49 @@ class DBTGenerator:
         if node.plugin_name in ["Output Data", "Browse"]:
             return f"{self._sanitize_name(workflow.metadata.name)}_output"
 
-        # Fallback
-        return self._sanitize_name(node.get_display_name())
+        # Fallback - avoid generic "tool_container" names
+        display = node.get_display_name()
+        if "container" in display.lower() or "tool container" in display.lower():
+            # Try to find a more meaningful name from context
+            return f"{self._sanitize_name(workflow.metadata.name)}_result"
+
+        return self._sanitize_name(display)
+
+    def _get_container_descriptive_name(self, container: AlteryxNode, workflow: AlteryxWorkflow) -> str:
+        """Get a descriptive name for a container by looking at its children."""
+        # If container has annotation, use it
+        if container.annotation and "container" not in container.annotation.lower():
+            return self._sanitize_name(container.annotation)
+
+        # Look at child nodes to determine purpose
+        output_children = []
+        summarize_children = []
+
+        for child_id in container.child_tool_ids:
+            child = workflow.get_node_by_id(child_id)
+            if child:
+                if child.category == ToolCategory.OUTPUT:
+                    output_children.append(child)
+                elif child.plugin_name == "Summarize":
+                    summarize_children.append(child)
+
+        # Use output child's info if available
+        for child in output_children:
+            if child.target_path:
+                return self._sanitize_name(Path(child.target_path).stem)
+            if child.table_name:
+                return self._sanitize_name(child.table_name)
+            if child.annotation:
+                return self._sanitize_name(child.annotation)
+
+        # Use summarize child's info
+        for child in summarize_children:
+            if child.group_by_fields:
+                fields = "_".join(child.group_by_fields[:2])
+                return f"summary_by_{self._sanitize_name(fields)}"
+
+        # Fallback to workflow name
+        return f"{self._sanitize_name(workflow.metadata.name)}_container_output"
 
     def _quote_column(self, col: str) -> str:
         """Wrap column name in double quotes for Trino compatibility."""
@@ -345,15 +427,223 @@ class DBTGenerator:
             if node.category == ToolCategory.INPUT:
                 self._generate_bronze_model(node, workflow_prefix)
 
-        # Generate silver models (intermediate)
+        # Generate silver models (intermediate) - aggregate sequential transforms
         silver_nodes = medallion.get(MedallionLayer.SILVER.value, [])
-        for node in silver_nodes:
-            self._generate_silver_model(node, workflow_prefix, workflow)
+        # Filter out containers
+        silver_nodes = [n for n in silver_nodes if n.category != ToolCategory.CONTAINER]
+        # Group and aggregate silver models
+        self._generate_aggregated_silver_models(silver_nodes, workflow_prefix, workflow)
 
         # Generate gold models (marts)
         gold_nodes = medallion.get(MedallionLayer.GOLD.value, [])
         for node in gold_nodes:
+            # Skip containers - their children should be processed separately
+            if node.category == ToolCategory.CONTAINER:
+                continue
             self._generate_gold_model(node, workflow_prefix, workflow)
+
+    def _generate_aggregated_silver_models(self, silver_nodes: List[AlteryxNode],
+                                            workflow_prefix: str,
+                                            workflow: AlteryxWorkflow) -> None:
+        """Generate aggregated silver models to minimize the number of intermediate steps."""
+        if not silver_nodes:
+            return
+
+        # Group nodes by their upstream source
+        # Nodes that form a linear chain can be merged into one model
+        processed = set()
+        chains = []
+
+        # Build chains of sequential transformations
+        for node in silver_nodes:
+            if node.tool_id in processed:
+                continue
+
+            chain = [node]
+            processed.add(node.tool_id)
+
+            # Follow downstream until we hit a fork or a gold layer node
+            current = node
+            while True:
+                downstream = workflow.get_downstream_nodes(current.tool_id)
+                # Filter to silver nodes only
+                downstream_silver = [n for n in downstream
+                                    if n in silver_nodes and n.tool_id not in processed]
+
+                # If exactly one downstream silver node and it has only this as upstream
+                if len(downstream_silver) == 1:
+                    next_node = downstream_silver[0]
+                    upstream = workflow.get_upstream_nodes(next_node.tool_id)
+                    # Only merge if this node feeds exclusively into next_node
+                    if len([u for u in upstream if u in silver_nodes]) == 1:
+                        chain.append(next_node)
+                        processed.add(next_node.tool_id)
+                        current = next_node
+                    else:
+                        break
+                else:
+                    break
+
+            chains.append(chain)
+
+        # Generate one model per chain
+        for chain in chains:
+            if len(chain) == 1:
+                # Single node - generate normally
+                self._generate_silver_model(chain[0], workflow_prefix, workflow)
+            else:
+                # Multiple nodes - generate combined model
+                self._generate_combined_silver_model(chain, workflow_prefix, workflow)
+
+    def _generate_combined_silver_model(self, chain: List[AlteryxNode],
+                                         workflow_prefix: str,
+                                         workflow: AlteryxWorkflow) -> None:
+        """Generate a single silver model that combines multiple sequential transformations."""
+        # Use the last node in the chain for the model name (most descriptive)
+        primary_node = chain[-1]
+
+        # Create a name that represents the chain
+        chain_names = [n.plugin_name for n in chain]
+        if len(chain_names) > 3:
+            model_desc = f"{chain_names[0]}_{chain_names[-1]}"
+        else:
+            model_desc = "_".join(chain_names)
+
+        model_name = f"int_{workflow_prefix}_{self._sanitize_name(model_desc)}"
+
+        # Get upstream dependencies (from the first node in chain)
+        first_node = chain[0]
+        upstream = workflow.get_upstream_nodes(first_node.tool_id)
+
+        content = [
+            f"-- Silver model combining {len(chain)} transformations:",
+            f"-- " + " -> ".join([n.plugin_name for n in chain]),
+            f"-- Generated from Alteryx workflow tools #{', #'.join([str(n.tool_id) for n in chain])}",
+            "",
+            "{{",
+            "    config(",
+            "        materialized='table'",
+            "    )",
+            "}}",
+            "",
+        ]
+
+        # Generate CTEs for upstream dependencies
+        if upstream:
+            for i, up_node in enumerate(upstream):
+                up_model = self._get_model_reference(up_node, workflow_prefix)
+                cte_name = f"source_{i + 1}" if len(upstream) > 1 else "source"
+                content.extend([
+                    f"with {cte_name} as (",
+                    "",
+                    f"    select * from {{{{ ref('{up_model}') }}}}",
+                    "",
+                    ")," if i < len(upstream) - 1 else "),",
+                    "",
+                ])
+
+        # Generate combined transformation logic
+        content.append(self._generate_chained_transformation_sql(chain, upstream))
+
+        self._write_file(
+            self.output_dir / "models" / "silver" / f"{model_name}.sql",
+            "\n".join(content)
+        )
+        self.models_generated.append(model_name)
+
+        # Collect columns from all nodes in chain
+        all_columns = []
+        for node in chain:
+            cols = self._extract_columns_from_node(node)
+            all_columns.extend([c for c in cols if c not in all_columns])
+
+        self.models_info[model_name] = ModelInfo(
+            name=model_name,
+            layer="silver",
+            columns=all_columns,
+            description=f"Combined: {' -> '.join([n.plugin_name for n in chain])}",
+            source_tool_id=chain[0].tool_id,
+        )
+
+    def _generate_chained_transformation_sql(self, chain: List[AlteryxNode],
+                                              upstream: List[AlteryxNode]) -> str:
+        """Generate SQL that chains multiple transformations together."""
+        source_cte = "source" if len(upstream) <= 1 else "source_1"
+
+        # Build CTEs for each transformation in the chain
+        cte_parts = []
+        prev_cte = source_cte
+
+        for i, node in enumerate(chain):
+            cte_name = f"step_{i + 1}" if i < len(chain) - 1 else "final"
+            sql_block = self._generate_single_transform_cte(node, prev_cte, cte_name)
+            cte_parts.append(sql_block)
+            prev_cte = cte_name
+
+        return "\n\n".join(cte_parts) + "\n\nselect * from final"
+
+    def _generate_single_transform_cte(self, node: AlteryxNode, source_cte: str, cte_name: str) -> str:
+        """Generate a single CTE for a transformation node."""
+        if node.plugin_name == "Filter":
+            condition = self._convert_expression(node.expression or "1=1")
+            return f"""{cte_name} as (
+    -- {node.plugin_name}: {node.annotation or ''}
+    select *
+    from {source_cte}
+    where {condition}
+),"""
+
+        elif node.plugin_name in ["Formula", "Multi-Field Formula"]:
+            formulas = node.configuration.get('formulas', [])
+            if formulas:
+                select_parts = ["*"]
+                for f in formulas:
+                    field = self._quote_column(f.get('field', 'new_field'))
+                    expr = self._convert_expression(f.get('expression', 'NULL'))
+                    select_parts.append(f"{expr} as {field}")
+
+                return f"""{cte_name} as (
+    -- {node.plugin_name}: {node.annotation or ''}
+    select
+        {','.join(chr(10) + '        ' + p for p in select_parts)}
+    from {source_cte}
+),"""
+
+        elif node.plugin_name == "Select":
+            if node.selected_fields:
+                quoted_fields = [self._quote_column(f.split(' AS ')[0].strip()) +
+                                (' as ' + self._quote_column(f.split(' AS ')[1].strip()) if ' AS ' in f.upper() else '')
+                                for f in node.selected_fields[:20]]
+                fields = ",\n        ".join(quoted_fields)
+                return f"""{cte_name} as (
+    -- {node.plugin_name}: {node.annotation or ''}
+    select
+        {fields}
+    from {source_cte}
+),"""
+
+        elif node.plugin_name == "Sort":
+            sort_fields = node.configuration.get('sort_fields', [])
+            if sort_fields:
+                order_parts = []
+                for sf in sort_fields:
+                    direction = "asc" if sf.get('order', 'Ascending') == 'Ascending' else "desc"
+                    field = self._quote_column(sf['field'])
+                    order_parts.append(f"{field} {direction}")
+                order_clause = ", ".join(order_parts)
+                return f"""{cte_name} as (
+    -- {node.plugin_name}: {node.annotation or ''}
+    select *
+    from {source_cte}
+    order by {order_clause}
+),"""
+
+        # Default pass-through
+        return f"""{cte_name} as (
+    -- {node.plugin_name}: {node.annotation or ''} (TODO: implement)
+    select *
+    from {source_cte}
+),"""
 
     def _generate_bronze_model(self, node: AlteryxNode, workflow_prefix: str) -> None:
         """Generate a bronze (staging) model with table materialization."""

@@ -20,6 +20,7 @@ class ToolCategory(Enum):
     DEVELOPER = "developer"
     IN_DATABASE = "in_database"
     MACRO = "macro"
+    CONTAINER = "container"  # Tool containers for organization
     UNKNOWN = "unknown"
 
 
@@ -42,6 +43,10 @@ class AlteryxNode:
     is_macro: bool = False
     macro_path: Optional[str] = None
     annotation: Optional[str] = None        # Tool annotation/comment
+
+    # Container relationships
+    container_id: Optional[int] = None      # ID of parent container (if inside one)
+    child_tool_ids: List[int] = field(default_factory=list)  # For containers: IDs of child tools
 
     # Extracted details based on tool type
     source_path: Optional[str] = None       # For input tools

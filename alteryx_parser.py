@@ -11,6 +11,7 @@ from models import (
     AlteryxNode, AlteryxConnection, AlteryxWorkflow, WorkflowMetadata,
     ToolCategory
 )
+from typing import TYPE_CHECKING
 from tool_mappings import get_category_from_plugin, get_simple_name
 
 
@@ -100,6 +101,7 @@ class AlteryxParser:
     def _parse_nodes(self) -> List[AlteryxNode]:
         """Extract all nodes/tools from the workflow."""
         nodes = []
+        container_children = {}  # container_id -> [child_ids]
 
         nodes_elem = self.root.find('.//Nodes') if self.root is not None else None
         if nodes_elem is None:
@@ -110,7 +112,63 @@ class AlteryxParser:
             if node:
                 nodes.append(node)
 
+                # Check if this is a tool container - extract child tool IDs
+                if node.category == ToolCategory.CONTAINER:
+                    child_ids = self._extract_container_children(node_elem)
+                    node.child_tool_ids = child_ids
+                    container_children[node.tool_id] = child_ids
+
+        # Set container_id on child nodes
+        for container_id, child_ids in container_children.items():
+            for child_id in child_ids:
+                for node in nodes:
+                    if node.tool_id == child_id:
+                        node.container_id = container_id
+                        break
+
         return nodes
+
+    def _extract_container_children(self, node_elem: ET.Element) -> List[int]:
+        """Extract child tool IDs from a tool container."""
+        child_ids = []
+
+        # Check ChildToolIds element (common format)
+        child_tools_elem = node_elem.find('.//ChildToolIds')
+        if child_tools_elem is not None and child_tools_elem.text:
+            # Format: "1,2,3,4" or "1 2 3 4"
+            text = child_tools_elem.text.strip()
+            # Split by comma or whitespace
+            for part in text.replace(',', ' ').split():
+                try:
+                    child_ids.append(int(part.strip()))
+                except ValueError:
+                    pass
+
+        # Also check Configuration/ChildToolIds
+        config_children = node_elem.find('.//Configuration/ChildToolIds')
+        if config_children is not None and config_children.text:
+            text = config_children.text.strip()
+            for part in text.replace(',', ' ').split():
+                try:
+                    child_id = int(part.strip())
+                    if child_id not in child_ids:
+                        child_ids.append(child_id)
+                except ValueError:
+                    pass
+
+        # Check Properties/ChildToolIds
+        props_children = node_elem.find('.//Properties/ChildToolIds')
+        if props_children is not None and props_children.text:
+            text = props_children.text.strip()
+            for part in text.replace(',', ' ').split():
+                try:
+                    child_id = int(part.strip())
+                    if child_id not in child_ids:
+                        child_ids.append(child_id)
+                except ValueError:
+                    pass
+
+        return child_ids
 
     def _parse_single_node(self, node_elem: ET.Element) -> Optional[AlteryxNode]:
         """Parse a single Node element."""

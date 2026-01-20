@@ -299,27 +299,39 @@ class DocumentationGenerator:
         """Generate a Mermaid flowchart for the workflow."""
         lines = ["graph LR"]
 
-        # Create node definitions
+        # Track which nodes are in containers
+        container_nodes = {}  # child_id -> container_id
+        containers = []
         for node in workflow.nodes:
-            node_id = f"N{node.tool_id}"
-            label = node.get_display_name()
+            if node.category == ToolCategory.CONTAINER:
+                containers.append(node)
+                for child_id in node.child_tool_ids:
+                    container_nodes[child_id] = node.tool_id
 
-            # Escape special characters
-            label = label.replace('"', "'").replace("[", "(").replace("]", ")")
+        # Create subgraphs for containers
+        for container in containers:
+            label = container.annotation or container.plugin_name
+            label = label.replace('"', "'")[:30]
+            lines.append(f'    subgraph C{container.tool_id}["{label}"]')
 
-            # Truncate long labels
-            if len(label) > 40:
-                label = label[:37] + "..."
+            # Add child nodes to subgraph
+            for child_id in container.child_tool_ids:
+                child = workflow.get_node_by_id(child_id)
+                if child:
+                    node_line = self._create_mermaid_node(child)
+                    lines.append(f'        {node_line}')
 
-            # Style based on category
-            if node.category == ToolCategory.INPUT:
-                lines.append(f'    {node_id}[("{label}")]')
-            elif node.category == ToolCategory.OUTPUT:
-                lines.append(f'    {node_id}[["{label}"]]')
-            elif node.is_macro:
-                lines.append(f'    {node_id}{{{{"{label}"}}}}')
-            else:
-                lines.append(f'    {node_id}["{label}"]')
+            lines.append('    end')
+
+        # Create node definitions for non-container, non-child nodes
+        for node in workflow.nodes:
+            if node.category == ToolCategory.CONTAINER:
+                continue  # Already handled as subgraph
+            if node.tool_id in container_nodes:
+                continue  # Already added to container subgraph
+
+            node_line = self._create_mermaid_node(node)
+            lines.append(f'    {node_line}')
 
         # Create connections
         for conn in workflow.connections:
@@ -337,6 +349,28 @@ class DocumentationGenerator:
                 lines.append(f'    {origin} --> {dest}')
 
         return "\n".join(lines)
+
+    def _create_mermaid_node(self, node: AlteryxNode) -> str:
+        """Create a Mermaid node definition."""
+        node_id = f"N{node.tool_id}"
+        label = node.get_display_name()
+
+        # Escape special characters
+        label = label.replace('"', "'").replace("[", "(").replace("]", ")")
+
+        # Truncate long labels
+        if len(label) > 40:
+            label = label[:37] + "..."
+
+        # Style based on category
+        if node.category == ToolCategory.INPUT:
+            return f'{node_id}[("{label}")]'
+        elif node.category == ToolCategory.OUTPUT:
+            return f'{node_id}[["{label}"]]'
+        elif node.is_macro:
+            return f'{node_id}{{{{"{label}"}}}}'
+        else:
+            return f'{node_id}["{label}"]'
 
     def _generate_sources_doc(self, workflows: List[AlteryxWorkflow]) -> None:
         """Generate sources.md with all data sources."""
