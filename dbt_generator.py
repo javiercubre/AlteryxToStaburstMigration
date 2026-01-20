@@ -48,6 +48,8 @@ class DBTGenerator:
         self.sources: Dict[str, Dict[str, SourceInfo]] = {}  # schema -> {table -> SourceInfo}
         self.models_info: Dict[str, ModelInfo] = {}  # model_name -> ModelInfo
         self.models_generated: List[str] = []
+        self._node_columns: Dict[int, List[str]] = {}  # tool_id -> columns (cache)
+        self._current_workflow: Optional[AlteryxWorkflow] = None
 
     def generate(self, workflows: List[AlteryxWorkflow]) -> None:
         """Generate complete DBT project from workflows."""
@@ -237,6 +239,105 @@ class DBTGenerator:
 
         return parts
 
+    def _get_node_columns(self, node: AlteryxNode, workflow: AlteryxWorkflow) -> List[str]:
+        """Get available columns at a node by tracing data lineage.
+
+        This determines what columns are available after a node's transformation
+        by looking at upstream columns and the node's own transformations.
+        """
+        # Check cache first
+        if node.tool_id in self._node_columns:
+            return self._node_columns[node.tool_id]
+
+        columns = []
+
+        # Get upstream columns first
+        upstream_nodes = workflow.get_upstream_nodes(node.tool_id)
+        upstream_columns = []
+        for up_node in upstream_nodes:
+            upstream_columns.extend(self._get_node_columns(up_node, workflow))
+        # Remove duplicates while preserving order
+        upstream_columns = list(dict.fromkeys(upstream_columns))
+
+        # Now apply this node's transformation
+        if node.category == ToolCategory.INPUT:
+            # Input nodes: get columns from source
+            columns = self._extract_columns_from_node(node)
+
+        elif node.plugin_name == "Select":
+            # Select tool: only keep selected columns, remove deselected
+            if node.selected_fields:
+                for field in node.selected_fields:
+                    # Handle "field AS alias" format
+                    if ' AS ' in field.upper():
+                        # Use the alias as the output column name
+                        parts = field.upper().split(' AS ')
+                        alias = field[field.upper().index(' AS ') + 4:].strip()
+                        columns.append(alias)
+                    else:
+                        columns.append(field)
+            else:
+                # No selected fields specified, pass through all upstream
+                columns = upstream_columns
+
+        elif node.plugin_name in ["Formula", "Multi-Field Formula"]:
+            # Formula: pass through upstream + add new calculated columns
+            columns = list(upstream_columns)
+            formulas = node.configuration.get('formulas', [])
+            for f in formulas:
+                field = f.get('field', '')
+                if field and field not in columns:
+                    columns.append(field)
+
+        elif node.plugin_name == "Filter":
+            # Filter: pass through all upstream columns (just filters rows)
+            columns = upstream_columns
+
+        elif node.plugin_name == "Sort":
+            # Sort: pass through all upstream columns (just reorders rows)
+            columns = upstream_columns
+
+        elif node.plugin_name == "Join":
+            # Join: columns from both inputs (upstream nodes)
+            columns = upstream_columns
+
+        elif node.plugin_name == "Summarize":
+            # Summarize: group by columns + aggregation output columns
+            if node.group_by_fields:
+                columns.extend(node.group_by_fields)
+            for agg in node.aggregations:
+                output_name = agg.get('output_name', agg.get('field', ''))
+                if output_name and output_name not in columns:
+                    columns.append(output_name)
+
+        elif node.plugin_name == "Union":
+            # Union: typically uses first input's columns
+            columns = upstream_columns
+
+        else:
+            # Default: pass through upstream columns
+            columns = upstream_columns if upstream_columns else self._extract_columns_from_node(node)
+
+        # Cache the result
+        self._node_columns[node.tool_id] = columns
+        return columns
+
+    def _get_upstream_columns(self, node: AlteryxNode, workflow: AlteryxWorkflow) -> List[str]:
+        """Get columns available from upstream nodes."""
+        upstream_nodes = workflow.get_upstream_nodes(node.tool_id)
+        all_columns = []
+        for up_node in upstream_nodes:
+            cols = self._get_node_columns(up_node, workflow)
+            all_columns.extend([c for c in cols if c not in all_columns])
+        return all_columns
+
+    def _format_column_list(self, columns: List[str], indent: str = "        ") -> str:
+        """Format a list of columns for SQL SELECT, with proper quoting."""
+        if not columns:
+            return f"{indent}*  -- TODO: specify columns"
+        quoted = [self._quote_column(c) for c in columns]
+        return f",\n{indent}".join(quoted)
+
     def _get_schema_name(self, node: AlteryxNode) -> str:
         """Determine schema name from source node."""
         if node.connection_string:
@@ -416,6 +517,10 @@ class DBTGenerator:
 
     def _generate_workflow_models(self, workflow: AlteryxWorkflow) -> None:
         """Generate DBT models for a single workflow."""
+        # Clear column cache for new workflow
+        self._node_columns = {}
+        self._current_workflow = workflow
+
         analyzer = TransformationAnalyzer(workflow)
         medallion = analyzer.suggest_medallion_mapping()
 
@@ -533,17 +638,32 @@ class DBTGenerator:
             for i, up_node in enumerate(upstream):
                 up_model = self._get_model_reference(up_node, workflow_prefix)
                 cte_name = f"source_{i + 1}" if len(upstream) > 1 else "source"
-                content.extend([
-                    f"with {cte_name} as (",
-                    "",
-                    f"    select * from {{{{ ref('{up_model}') }}}}",
-                    "",
-                    ")," if i < len(upstream) - 1 else "),",
-                    "",
-                ])
+                # Get columns from upstream node
+                up_columns = self._get_node_columns(up_node, workflow)
+                if up_columns:
+                    col_list = self._format_column_list(up_columns)
+                    content.extend([
+                        f"with {cte_name} as (",
+                        "",
+                        f"    select",
+                        f"        {col_list}",
+                        f"    from {{{{ ref('{up_model}') }}}}",
+                        "",
+                        ")," if i < len(upstream) - 1 else "),",
+                        "",
+                    ])
+                else:
+                    content.extend([
+                        f"with {cte_name} as (",
+                        "",
+                        f"    select * from {{{{ ref('{up_model}') }}}}  -- TODO: specify columns",
+                        "",
+                        ")," if i < len(upstream) - 1 else "),",
+                        "",
+                    ])
 
         # Generate combined transformation logic
-        content.append(self._generate_chained_transformation_sql(chain, upstream))
+        content.append(self._generate_chained_transformation_sql(chain, upstream, workflow))
 
         self._write_file(
             self.output_dir / "models" / "silver" / f"{model_name}.sql",
@@ -566,7 +686,8 @@ class DBTGenerator:
         )
 
     def _generate_chained_transformation_sql(self, chain: List[AlteryxNode],
-                                              upstream: List[AlteryxNode]) -> str:
+                                              upstream: List[AlteryxNode],
+                                              workflow: AlteryxWorkflow) -> str:
         """Generate SQL that chains multiple transformations together."""
         source_cte = "source" if len(upstream) <= 1 else "source_1"
 
@@ -576,19 +697,40 @@ class DBTGenerator:
 
         for i, node in enumerate(chain):
             cte_name = f"step_{i + 1}" if i < len(chain) - 1 else "final"
-            sql_block = self._generate_single_transform_cte(node, prev_cte, cte_name)
+            sql_block = self._generate_single_transform_cte(node, prev_cte, cte_name, workflow)
             cte_parts.append(sql_block)
             prev_cte = cte_name
 
-        return "\n\n".join(cte_parts) + "\n\nselect * from final"
+        # Get final columns from the last node in chain
+        final_columns = self._get_node_columns(chain[-1], workflow)
+        if final_columns:
+            final_col_list = self._format_column_list(final_columns)
+            return "\n\n".join(cte_parts) + f"\n\nselect\n    {final_col_list}\nfrom final"
+        else:
+            return "\n\n".join(cte_parts) + "\n\nselect * from final  -- TODO: specify columns"
 
-    def _generate_single_transform_cte(self, node: AlteryxNode, source_cte: str, cte_name: str) -> str:
+    def _generate_single_transform_cte(self, node: AlteryxNode, source_cte: str, cte_name: str,
+                                        workflow: AlteryxWorkflow) -> str:
         """Generate a single CTE for a transformation node."""
+        # Get upstream columns for this node
+        upstream_columns = self._get_upstream_columns(node, workflow)
+
         if node.plugin_name == "Filter":
             condition = self._convert_expression(node.expression or "1=1")
-            return f"""{cte_name} as (
+            # Filter passes through all columns
+            if upstream_columns:
+                col_list = self._format_column_list(upstream_columns)
+                return f"""{cte_name} as (
     -- {node.plugin_name}: {node.annotation or ''}
-    select *
+    select
+        {col_list}
+    from {source_cte}
+    where {condition}
+),"""
+            else:
+                return f"""{cte_name} as (
+    -- {node.plugin_name}: {node.annotation or ''}
+    select *  -- TODO: specify columns
     from {source_cte}
     where {condition}
 ),"""
@@ -596,7 +738,11 @@ class DBTGenerator:
         elif node.plugin_name in ["Formula", "Multi-Field Formula"]:
             formulas = node.configuration.get('formulas', [])
             if formulas:
-                select_parts = ["*"]
+                # Start with upstream columns, then add formula columns
+                if upstream_columns:
+                    select_parts = [self._quote_column(c) for c in upstream_columns]
+                else:
+                    select_parts = ["*  -- TODO: specify columns"]
                 for f in formulas:
                     field = self._quote_column(f.get('field', 'new_field'))
                     expr = self._convert_expression(f.get('expression', 'NULL'))
@@ -613,7 +759,7 @@ class DBTGenerator:
             if node.selected_fields:
                 quoted_fields = [self._quote_column(f.split(' AS ')[0].strip()) +
                                 (' as ' + self._quote_column(f.split(' AS ')[1].strip()) if ' AS ' in f.upper() else '')
-                                for f in node.selected_fields[:20]]
+                                for f in node.selected_fields]
                 fields = ",\n        ".join(quoted_fields)
                 return f"""{cte_name} as (
     -- {node.plugin_name}: {node.annotation or ''}
@@ -631,17 +777,37 @@ class DBTGenerator:
                     field = self._quote_column(sf['field'])
                     order_parts.append(f"{field} {direction}")
                 order_clause = ", ".join(order_parts)
-                return f"""{cte_name} as (
+                # Sort passes through all columns
+                if upstream_columns:
+                    col_list = self._format_column_list(upstream_columns)
+                    return f"""{cte_name} as (
     -- {node.plugin_name}: {node.annotation or ''}
-    select *
+    select
+        {col_list}
+    from {source_cte}
+    order by {order_clause}
+),"""
+                else:
+                    return f"""{cte_name} as (
+    -- {node.plugin_name}: {node.annotation or ''}
+    select *  -- TODO: specify columns
     from {source_cte}
     order by {order_clause}
 ),"""
 
-        # Default pass-through
-        return f"""{cte_name} as (
+        # Default pass-through with explicit columns if available
+        if upstream_columns:
+            col_list = self._format_column_list(upstream_columns)
+            return f"""{cte_name} as (
     -- {node.plugin_name}: {node.annotation or ''} (TODO: implement)
-    select *
+    select
+        {col_list}
+    from {source_cte}
+),"""
+        else:
+            return f"""{cte_name} as (
+    -- {node.plugin_name}: {node.annotation or ''} (TODO: implement)
+    select *  -- TODO: specify columns
     from {source_cte}
 ),"""
 
@@ -663,6 +829,15 @@ class DBTGenerator:
         else:
             select_clause = "        * -- TODO: Replace with explicit column list"
 
+        # Build the source select with explicit columns
+        if columns:
+            source_col_list = ",\n        ".join([self._quote_column(c) for c in columns])
+            source_select = f"    select\n        {source_col_list}\n    from {{{{ source('{schema}', '{table}') }}}}"
+            final_select = f"select\n    {','.join(chr(10) + '    ' + self._quote_column(c) for c in columns)}\nfrom renamed"
+        else:
+            source_select = f"    select * from {{{{ source('{schema}', '{table}') }}}}  -- TODO: specify columns"
+            final_select = "select * from renamed  -- TODO: specify columns"
+
         content = [
             f"-- Bronze model for {node.get_display_name()}",
             f"-- Source: {node.source_path or node.table_name or 'Unknown'}",
@@ -676,7 +851,7 @@ class DBTGenerator:
             "",
             "with source as (",
             "",
-            f"    select * from {{{{ source('{schema}', '{table}') }}}}",
+            source_select,
             "",
             "),",
             "",
@@ -688,7 +863,7 @@ class DBTGenerator:
             "",
             ")",
             "",
-            "select * from renamed",
+            final_select,
         ]
 
         self._write_file(
@@ -733,17 +908,32 @@ class DBTGenerator:
             for i, up_node in enumerate(upstream):
                 up_model = self._get_model_reference(up_node, workflow_prefix)
                 cte_name = f"source_{i + 1}" if len(upstream) > 1 else "source"
-                content.extend([
-                    f"with {cte_name} as (",
-                    "",
-                    f"    select * from {{{{ ref('{up_model}') }}}}",
-                    "",
-                    ")," if i < len(upstream) - 1 else "),",
-                    "",
-                ])
+                # Get columns from upstream node
+                up_columns = self._get_node_columns(up_node, workflow)
+                if up_columns:
+                    col_list = self._format_column_list(up_columns)
+                    content.extend([
+                        f"with {cte_name} as (",
+                        "",
+                        f"    select",
+                        f"        {col_list}",
+                        f"    from {{{{ ref('{up_model}') }}}}",
+                        "",
+                        ")," if i < len(upstream) - 1 else "),",
+                        "",
+                    ])
+                else:
+                    content.extend([
+                        f"with {cte_name} as (",
+                        "",
+                        f"    select * from {{{{ ref('{up_model}') }}}}  -- TODO: specify columns",
+                        "",
+                        ")," if i < len(upstream) - 1 else "),",
+                        "",
+                    ])
 
         # Generate transformation logic based on tool type
-        sql = self._generate_transformation_sql(node, upstream)
+        sql = self._generate_transformation_sql(node, upstream, workflow)
         content.append(sql)
 
         self._write_file(
@@ -799,17 +989,32 @@ class DBTGenerator:
             for i, up_node in enumerate(upstream):
                 up_model = self._get_model_reference(up_node, workflow_prefix)
                 cte_name = f"source_{i + 1}" if len(upstream) > 1 else "source"
-                content.extend([
-                    f"with {cte_name} as (",
-                    "",
-                    f"    select * from {{{{ ref('{up_model}') }}}}",
-                    "",
-                    ")," if i < len(upstream) - 1 else "),",
-                    "",
-                ])
+                # Get columns from upstream node
+                up_columns = self._get_node_columns(up_node, workflow)
+                if up_columns:
+                    col_list = self._format_column_list(up_columns)
+                    content.extend([
+                        f"with {cte_name} as (",
+                        "",
+                        f"    select",
+                        f"        {col_list}",
+                        f"    from {{{{ ref('{up_model}') }}}}",
+                        "",
+                        ")," if i < len(upstream) - 1 else "),",
+                        "",
+                    ])
+                else:
+                    content.extend([
+                        f"with {cte_name} as (",
+                        "",
+                        f"    select * from {{{{ ref('{up_model}') }}}}  -- TODO: specify columns",
+                        "",
+                        ")," if i < len(upstream) - 1 else "),",
+                        "",
+                    ])
 
         # Generate transformation logic
-        sql = self._generate_transformation_sql(node, upstream)
+        sql = self._generate_transformation_sql(node, upstream, workflow)
         content.append(sql)
 
         self._write_file(
@@ -837,30 +1042,63 @@ class DBTGenerator:
             return f"int_{workflow_prefix}_{self._sanitize_name(node.get_display_name())}"
 
     def _generate_transformation_sql(self, node: AlteryxNode,
-                                      upstream: List[AlteryxNode]) -> str:
+                                      upstream: List[AlteryxNode],
+                                      workflow: AlteryxWorkflow) -> str:
         """Generate SQL for a transformation node with double-quoted columns."""
         source_cte = "source" if len(upstream) <= 1 else "source_1"
 
+        # Get upstream columns for explicit selects
+        upstream_columns = self._get_upstream_columns(node, workflow)
+        node_columns = self._get_node_columns(node, workflow)
+
         if node.plugin_name == "Filter":
             condition = self._convert_expression(node.expression or "1=1")
-            return f"""final as (
+            # Filter passes through all upstream columns
+            if upstream_columns:
+                col_list = self._format_column_list(upstream_columns)
+                final_col_list = self._format_column_list(upstream_columns)
+                return f"""final as (
 
-    select *
+    select
+        {col_list}
     from {source_cte}
     where {condition}
 
 )
 
-select * from final"""
+select
+    {final_col_list}
+from final"""
+            else:
+                return f"""final as (
+
+    select *  -- TODO: specify columns
+    from {source_cte}
+    where {condition}
+
+)
+
+select * from final  -- TODO: specify columns"""
 
         elif node.plugin_name in ["Formula", "Multi-Field Formula"]:
             formulas = node.configuration.get('formulas', [])
             if formulas:
-                select_parts = ["    *"]
+                # Start with upstream columns, then add formula columns
+                if upstream_columns:
+                    select_parts = [f"    {self._quote_column(c)}" for c in upstream_columns]
+                else:
+                    select_parts = ["    *  -- TODO: specify columns"]
                 for f in formulas:
                     field = self._quote_column(f.get('field', 'new_field'))
                     expr = self._convert_expression(f.get('expression', 'NULL'))
                     select_parts.append(f"    , {expr} as {field}")
+
+                # Final select uses node columns (upstream + formula outputs)
+                if node_columns:
+                    final_col_list = self._format_column_list(node_columns)
+                    final_select = f"select\n    {final_col_list}\nfrom final"
+                else:
+                    final_select = "select * from final  -- TODO: specify columns"
 
                 return f"""final as (
 
@@ -870,9 +1108,12 @@ select * from final"""
 
 )
 
-select * from final"""
+{final_select}"""
             else:
-                return f"select * from {source_cte}"
+                if upstream_columns:
+                    col_list = self._format_column_list(upstream_columns)
+                    return f"select\n    {col_list}\nfrom {source_cte}"
+                return f"select * from {source_cte}  -- TODO: specify columns"
 
         elif node.plugin_name == "Join":
             join_type = node.join_type or "LEFT"
@@ -886,18 +1127,29 @@ select * from final"""
 
             join_condition = " and ".join(conditions) if conditions else "1=1"
 
+            # For joins, we need columns from both sources
+            if upstream_columns:
+                # Prefix columns with source alias to avoid ambiguity
+                col_parts = [f"source_1.{self._quote_column(c)}" for c in upstream_columns]
+                col_list = ",\n        ".join(col_parts)
+                final_col_list = self._format_column_list(upstream_columns)
+            else:
+                col_list = "source_1.*  -- TODO: specify columns from both sources"
+                final_col_list = "*  -- TODO: specify columns"
+
             return f"""final as (
 
     select
-        source_1.*
-        -- Add columns from source_2 as needed
+        {col_list}
     from source_1
     {join_type.lower()} join source_2
         on {join_condition}
 
 )
 
-select * from final"""
+select
+    {final_col_list}
+from final"""
 
         elif node.plugin_name == "Summarize":
             # Quote group by fields
@@ -925,6 +1177,12 @@ select * from final"""
 
             agg_clause = ",\n        ".join(agg_parts) if agg_parts else "count(*) as \"record_count\""
 
+            # Summarize output columns are group by + aggregations
+            if node_columns:
+                final_col_list = self._format_column_list(node_columns)
+            else:
+                final_col_list = "*"
+
             return f"""final as (
 
     select
@@ -934,23 +1192,40 @@ select * from final"""
 
 )
 
-select * from final"""
+select
+    {final_col_list}
+from final"""
 
         elif node.plugin_name == "Union":
             if len(upstream) > 1:
                 union_parts = []
-                for i in range(len(upstream)):
-                    union_parts.append(f"select * from source_{i + 1}")
+                for i, up_node in enumerate(upstream):
+                    up_cols = self._get_node_columns(up_node, workflow)
+                    if up_cols:
+                        col_list = self._format_column_list(up_cols)
+                        union_parts.append(f"select\n    {col_list}\nfrom source_{i + 1}")
+                    else:
+                        union_parts.append(f"select * from source_{i + 1}  -- TODO: specify columns")
                 return "\n\nunion all\n\n".join(union_parts)
-            return f"select * from {source_cte}"
+            if upstream_columns:
+                col_list = self._format_column_list(upstream_columns)
+                return f"select\n    {col_list}\nfrom {source_cte}"
+            return f"select * from {source_cte}  -- TODO: specify columns"
 
         elif node.plugin_name == "Select":
             if node.selected_fields:
-                # Quote all field names
+                # Quote all field names - these ARE the explicit columns
                 quoted_fields = [self._quote_column(f.split(' AS ')[0].strip()) +
                                 (' as ' + self._quote_column(f.split(' AS ')[1].strip()) if ' AS ' in f.upper() else '')
-                                for f in node.selected_fields[:20]]
+                                for f in node.selected_fields]
                 fields = ",\n        ".join(quoted_fields)
+
+                # Final select uses the selected fields
+                if node_columns:
+                    final_col_list = self._format_column_list(node_columns)
+                else:
+                    final_col_list = fields
+
                 return f"""final as (
 
     select
@@ -959,7 +1234,9 @@ select * from final"""
 
 )
 
-select * from final"""
+select
+    {final_col_list}
+from final"""
 
         elif node.plugin_name == "Sort":
             sort_fields = node.configuration.get('sort_fields', [])
@@ -970,27 +1247,59 @@ select * from final"""
                     field = self._quote_column(sf['field'])
                     order_parts.append(f"{field} {direction}")
                 order_clause = ", ".join(order_parts)
-                return f"""final as (
 
-    select *
+                # Sort passes through all columns
+                if upstream_columns:
+                    col_list = self._format_column_list(upstream_columns)
+                    return f"""final as (
+
+    select
+        {col_list}
     from {source_cte}
     order by {order_clause}
 
 )
 
-select * from final"""
+select
+    {col_list}
+from final"""
+                else:
+                    return f"""final as (
+
+    select *  -- TODO: specify columns
+    from {source_cte}
+    order by {order_clause}
+
+)
+
+select * from final  -- TODO: specify columns"""
 
         # Default
-        return f"""final as (
+        if upstream_columns:
+            col_list = self._format_column_list(upstream_columns)
+            return f"""final as (
 
     select
         -- TODO: Implement {node.plugin_name} transformation
-        *
+        {col_list}
     from {source_cte}
 
 )
 
-select * from final"""
+select
+    {col_list}
+from final"""
+        else:
+            return f"""final as (
+
+    select
+        -- TODO: Implement {node.plugin_name} transformation
+        *  -- TODO: specify columns
+    from {source_cte}
+
+)
+
+select * from final  -- TODO: specify columns"""
 
     def _convert_expression(self, expr: str) -> str:
         """Convert Alteryx expression to Trino SQL with quoted identifiers.

@@ -469,20 +469,33 @@ class AlteryxParser:
     def _parse_select_config(self, config_elem: ET.Element, node: AlteryxNode, config: Dict):
         """Parse select tool configuration."""
         selected_fields = []
+        deselected_fields = []
+        all_fields = []
 
         for field in config_elem.findall('.//SelectField'):
             field_name = field.get('field', '')
             selected = field.get('selected', 'True')
             rename = field.get('rename', '')
 
-            if selected == 'True' and field_name:
+            if not field_name:
+                continue
+
+            # Track all fields for column lineage
+            all_fields.append(field_name)
+
+            if selected == 'True':
                 if rename:
                     selected_fields.append(f"{field_name} AS {rename}")
                 else:
                     selected_fields.append(field_name)
+            else:
+                # Track deselected fields
+                deselected_fields.append(field_name)
 
         node.selected_fields = selected_fields
         config['selected_fields'] = selected_fields
+        config['deselected_fields'] = deselected_fields
+        config['all_fields'] = all_fields
 
     def _parse_sort_config(self, config_elem: ET.Element, node: AlteryxNode, config: Dict):
         """Parse sort tool configuration."""
