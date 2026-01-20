@@ -1,0 +1,107 @@
+<?xml version="1.0"?>
+<AlteryxDocument yxmdVer="2023.1">
+  <Properties>
+    <MetaInfo>
+      <Name>Data Validator</Name>
+      <Description>Validates data quality and flags records with issues</Description>
+      <Author>Data Team</Author>
+    </MetaInfo>
+    <MacroType>Standard</MacroType>
+  </Properties>
+  <Nodes>
+    <!-- Macro Input -->
+    <Node ToolID="1">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.MacroInput.MacroInput">
+        <Position x="54" y="54"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Input Data</Name>
+        </Annotation>
+        <Configuration>
+          <Name>Input</Name>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Formula: Validation Flags -->
+    <Node ToolID="2">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.Formula.Formula">
+        <Position x="174" y="54"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Add Validation Flags</Name>
+        </Annotation>
+        <Configuration>
+          <FormulaField field="is_valid" expression="IIF(IsNull([product_id]) OR IsEmpty([product_id]), False, True)" type="Bool"/>
+          <FormulaField field="validation_message" expression="IIF([is_valid], '', 'Missing product_id')" type="String"/>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Filter: Valid Records -->
+    <Node ToolID="3">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.Filter.Filter">
+        <Position x="294" y="54"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Filter Valid</Name>
+        </Annotation>
+        <Configuration>
+          <Expression>[is_valid] = True</Expression>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Macro Output: Valid -->
+    <Node ToolID="4">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.MacroOutput.MacroOutput">
+        <Position x="414" y="54"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Valid Records</Name>
+        </Annotation>
+        <Configuration>
+          <Name>Output</Name>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Macro Output: Invalid -->
+    <Node ToolID="5">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.MacroOutput.MacroOutput">
+        <Position x="414" y="154"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Invalid Records</Name>
+        </Annotation>
+        <Configuration>
+          <Name>Errors</Name>
+        </Configuration>
+      </Properties>
+    </Node>
+  </Nodes>
+
+  <Connections>
+    <Connection>
+      <Origin ToolID="1" Connection="Output"/>
+      <Destination ToolID="2" Connection="Input"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="2" Connection="Output"/>
+      <Destination ToolID="3" Connection="Input"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="3" Connection="True"/>
+      <Destination ToolID="4" Connection="Input"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="3" Connection="False"/>
+      <Destination ToolID="5" Connection="Input"/>
+    </Connection>
+  </Connections>
+</AlteryxDocument>

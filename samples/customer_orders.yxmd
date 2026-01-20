@@ -1,0 +1,224 @@
+<?xml version="1.0"?>
+<AlteryxDocument yxmdVer="2023.1">
+  <Properties>
+    <MetaInfo>
+      <Name>Customer Orders Analysis</Name>
+      <Description>Joins customer data with orders, calculates totals, and generates summary report</Description>
+      <Author>Data Team</Author>
+    </MetaInfo>
+    <Annotation>
+      <DefaultAnnotationText>Customer Orders ETL Workflow</DefaultAnnotationText>
+    </Annotation>
+  </Properties>
+  <Nodes>
+    <!-- Input: Customers CSV -->
+    <Node ToolID="1">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.DbFileInput.DbFileInput">
+        <Position x="54" y="54"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Customers</Name>
+          <DefaultAnnotationText>customers.csv</DefaultAnnotationText>
+        </Annotation>
+        <Configuration>
+          <File OutputFileName="">\\data\raw\customers.csv</File>
+          <FormatSpecificOptions>
+            <HeaderRow>True</HeaderRow>
+            <CodePage>28591</CodePage>
+          </FormatSpecificOptions>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Input: Orders Database -->
+    <Node ToolID="2">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.DbFileInput.DbFileInput">
+        <Position x="54" y="174"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Orders</Name>
+          <DefaultAnnotationText>orders_db</DefaultAnnotationText>
+        </Annotation>
+        <Configuration>
+          <Connection>Server=sqlserver.company.com;Database=sales;Trusted_Connection=True</Connection>
+          <Table>dbo.orders</Table>
+          <SQLStatement>SELECT order_id, customer_id, order_date, status, quantity, unit_price FROM dbo.orders WHERE order_date >= '2023-01-01'</SQLStatement>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Select: Customer Fields -->
+    <Node ToolID="3">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.AlteryxSelect.AlteryxSelect">
+        <Position x="174" y="54"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Select Customer Fields</Name>
+        </Annotation>
+        <Configuration>
+          <SelectField field="customer_id" selected="True"/>
+          <SelectField field="customer_name" selected="True"/>
+          <SelectField field="email" selected="True"/>
+          <SelectField field="region" selected="True"/>
+          <SelectField field="created_date" selected="False"/>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Filter: Active Orders -->
+    <Node ToolID="4">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.Filter.Filter">
+        <Position x="174" y="174"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Filter Active Orders</Name>
+        </Annotation>
+        <Configuration>
+          <Mode>Custom</Mode>
+          <Expression>[status] = "active" OR [status] = "completed"</Expression>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Join: Customer + Orders -->
+    <Node ToolID="5">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.Join.Join">
+        <Position x="294" y="114"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Join Customer Orders</Name>
+        </Annotation>
+        <Configuration>
+          <JoinByFields>
+            <Field left="customer_id" right="customer_id"/>
+          </JoinByFields>
+          <SelectJoinInfo connection="Inner"/>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Formula: Calculate Total -->
+    <Node ToolID="6">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.Formula.Formula">
+        <Position x="414" y="114"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Calculate Order Total</Name>
+        </Annotation>
+        <Configuration>
+          <FormulaField field="order_total" expression="[quantity] * [unit_price]" type="Double"/>
+          <FormulaField field="order_year" expression="DateTimeYear([order_date])" type="Int32"/>
+          <FormulaField field="order_month" expression="DateTimeMonth([order_date])" type="Int32"/>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Summarize: By Customer -->
+    <Node ToolID="7">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.Summarize.Summarize">
+        <Position x="534" y="114"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Summarize by Customer</Name>
+        </Annotation>
+        <Configuration>
+          <SummarizeField field="customer_id" action="GroupBy"/>
+          <SummarizeField field="customer_name" action="GroupBy"/>
+          <SummarizeField field="region" action="GroupBy"/>
+          <SummarizeField field="order_total" action="Sum" rename="total_revenue"/>
+          <SummarizeField field="order_id" action="Count" rename="order_count"/>
+          <SummarizeField field="order_total" action="Avg" rename="avg_order_value"/>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Sort: By Revenue -->
+    <Node ToolID="8">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.Sort.Sort">
+        <Position x="654" y="114"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Sort by Revenue</Name>
+        </Annotation>
+        <Configuration>
+          <SortInfo field="total_revenue" order="Descending"/>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Output: Customer Summary -->
+    <Node ToolID="9">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.DbFileOutput.DbFileOutput">
+        <Position x="774" y="114"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Customer Summary Output</Name>
+        </Annotation>
+        <Configuration>
+          <File>\\data\output\customer_summary.csv</File>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Browse: Preview -->
+    <Node ToolID="10">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.BrowseV2.BrowseV2">
+        <Position x="774" y="54"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Preview Results</Name>
+        </Annotation>
+        <Configuration/>
+      </Properties>
+    </Node>
+  </Nodes>
+
+  <Connections>
+    <Connection>
+      <Origin ToolID="1" Connection="Output"/>
+      <Destination ToolID="3" Connection="Input"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="2" Connection="Output"/>
+      <Destination ToolID="4" Connection="Input"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="3" Connection="Output"/>
+      <Destination ToolID="5" Connection="Left"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="4" Connection="True"/>
+      <Destination ToolID="5" Connection="Right"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="5" Connection="Join"/>
+      <Destination ToolID="6" Connection="Input"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="6" Connection="Output"/>
+      <Destination ToolID="7" Connection="Input"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="7" Connection="Output"/>
+      <Destination ToolID="8" Connection="Input"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="8" Connection="Output"/>
+      <Destination ToolID="9" Connection="Input"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="8" Connection="Output"/>
+      <Destination ToolID="10" Connection="Input"/>
+    </Connection>
+  </Connections>
+</AlteryxDocument>

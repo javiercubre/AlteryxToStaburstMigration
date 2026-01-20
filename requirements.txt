@@ -1,0 +1,13 @@
+# Alteryx to DBT Documentation Generator
+# Core dependencies (minimal - uses mostly stdlib)
+
+# No external dependencies required for basic functionality!
+# The tool uses only Python standard library:
+# - xml.etree.ElementTree for XML parsing
+# - argparse for CLI
+# - pathlib for path handling
+# - dataclasses for data models
+
+# Optional dependencies for enhanced functionality:
+# lxml>=4.9.0        # Faster/more robust XML parsing (optional)
+# networkx>=3.0      # Advanced graph analysis (future enhancement)

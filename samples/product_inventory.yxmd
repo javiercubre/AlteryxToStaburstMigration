@@ -1,0 +1,204 @@
+<?xml version="1.0"?>
+<AlteryxDocument yxmdVer="2023.1">
+  <Properties>
+    <MetaInfo>
+      <Name>Product Inventory Report</Name>
+      <Description>Combines product data with inventory levels and generates stock alerts</Description>
+      <Author>Analytics Team</Author>
+    </MetaInfo>
+  </Properties>
+  <Nodes>
+    <!-- Input: Products -->
+    <Node ToolID="1">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.DbFileInput.DbFileInput">
+        <Position x="54" y="54"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Products</Name>
+        </Annotation>
+        <Configuration>
+          <File>\\data\raw\products.xlsx</File>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Input: Inventory -->
+    <Node ToolID="2">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.DbFileInput.DbFileInput">
+        <Position x="54" y="174"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Inventory Levels</Name>
+        </Annotation>
+        <Configuration>
+          <Connection>Server=warehouse.company.com;Database=inventory</Connection>
+          <Table>dbo.stock_levels</Table>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Data Cleansing -->
+    <Node ToolID="3">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.DataCleansing.DataCleansing">
+        <Position x="174" y="54"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Clean Product Data</Name>
+        </Annotation>
+        <Configuration>
+          <RemoveNull>True</RemoveNull>
+          <TrimWhitespace>True</TrimWhitespace>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Union -->
+    <Node ToolID="4">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.Union.Union">
+        <Position x="294" y="114"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Combine Sources</Name>
+        </Annotation>
+        <Configuration>
+          <Mode>ByName</Mode>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Formula: Stock Status -->
+    <Node ToolID="5">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.Formula.Formula">
+        <Position x="414" y="114"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Calculate Stock Status</Name>
+        </Annotation>
+        <Configuration>
+          <FormulaField field="stock_status" expression="IIF([quantity_on_hand] &lt; [reorder_point], 'LOW', IIF([quantity_on_hand] &lt; [reorder_point] * 2, 'MEDIUM', 'OK'))" type="String"/>
+          <FormulaField field="days_of_stock" expression="IIF([avg_daily_sales] > 0, [quantity_on_hand] / [avg_daily_sales], 999)" type="Double"/>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Filter: Low Stock -->
+    <Node ToolID="6">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.Filter.Filter">
+        <Position x="534" y="114"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Filter Low Stock</Name>
+        </Annotation>
+        <Configuration>
+          <Expression>[stock_status] = "LOW"</Expression>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Macro Reference (simulated) -->
+    <Node ToolID="7">
+      <GuiSettings>
+        <Position x="654" y="54"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Data Validator</Name>
+        </Annotation>
+      </Properties>
+      <EngineSettings Macro="..\\macros\\DataValidator.yxmc"/>
+    </Node>
+
+    <!-- Output: Stock Alerts -->
+    <Node ToolID="8">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.DbFileOutput.DbFileOutput">
+        <Position x="774" y="114"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Stock Alerts</Name>
+        </Annotation>
+        <Configuration>
+          <File>\\data\output\stock_alerts.csv</File>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Summarize: By Category -->
+    <Node ToolID="9">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.Summarize.Summarize">
+        <Position x="534" y="234"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Summary by Category</Name>
+        </Annotation>
+        <Configuration>
+          <SummarizeField field="category" action="GroupBy"/>
+          <SummarizeField field="product_id" action="Count" rename="product_count"/>
+          <SummarizeField field="quantity_on_hand" action="Sum" rename="total_stock"/>
+          <SummarizeField field="days_of_stock" action="Min" rename="min_days_stock"/>
+        </Configuration>
+      </Properties>
+    </Node>
+
+    <!-- Output: Category Summary -->
+    <Node ToolID="10">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.DbFileOutput.DbFileOutput">
+        <Position x="654" y="234"/>
+      </GuiSettings>
+      <Properties>
+        <Annotation>
+          <Name>Category Summary</Name>
+        </Annotation>
+        <Configuration>
+          <File>\\data\output\category_summary.csv</File>
+        </Configuration>
+      </Properties>
+    </Node>
+  </Nodes>
+
+  <Connections>
+    <Connection>
+      <Origin ToolID="1" Connection="Output"/>
+      <Destination ToolID="3" Connection="Input"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="3" Connection="Output"/>
+      <Destination ToolID="4" Connection="Input1"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="2" Connection="Output"/>
+      <Destination ToolID="4" Connection="Input2"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="4" Connection="Output"/>
+      <Destination ToolID="5" Connection="Input"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="5" Connection="Output"/>
+      <Destination ToolID="6" Connection="Input"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="6" Connection="True"/>
+      <Destination ToolID="7" Connection="Input"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="7" Connection="Output"/>
+      <Destination ToolID="8" Connection="Input"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="5" Connection="Output"/>
+      <Destination ToolID="9" Connection="Input"/>
+    </Connection>
+    <Connection>
+      <Origin ToolID="9" Connection="Output"/>
+      <Destination ToolID="10" Connection="Input"/>
+    </Connection>
+  </Connections>
+</AlteryxDocument>

@@ -1,0 +1,429 @@
+"""
+Transformation analyzer for data lineage and flow analysis.
+"""
+from typing import List, Dict, Set, Optional, Tuple
+from collections import defaultdict
+
+from models import (
+    AlteryxWorkflow, AlteryxNode, AlteryxConnection,
+    TransformationStep, DataLineage, ToolCategory, MedallionLayer
+)
+from tool_mappings import get_medallion_layer, get_sql_mapping, AGGREGATION_MAP
+
+
+class TransformationAnalyzer:
+    """Analyzes workflow transformations and builds data lineage."""
+
+    def __init__(self, workflow: AlteryxWorkflow):
+        self.workflow = workflow
+        self._build_graph()
+
+    def _build_graph(self):
+        """Build adjacency lists for graph traversal."""
+        # Forward adjacency (downstream)
+        self.downstream: Dict[int, List[int]] = defaultdict(list)
+        # Backward adjacency (upstream)
+        self.upstream: Dict[int, List[int]] = defaultdict(list)
+
+        for conn in self.workflow.connections:
+            self.downstream[conn.origin_id].append(conn.destination_id)
+            self.upstream[conn.destination_id].append(conn.origin_id)
+
+    def get_ordered_transformations(self) -> List[TransformationStep]:
+        """Get all transformations in execution order using topological sort."""
+        # Find execution order via topological sort
+        visited = set()
+        order = []
+
+        def dfs(node_id: int):
+            if node_id in visited:
+                return
+            visited.add(node_id)
+
+            # Visit all upstream nodes first
+            for upstream_id in self.upstream.get(node_id, []):
+                dfs(upstream_id)
+
+            order.append(node_id)
+
+        # Start DFS from all nodes
+        for node in self.workflow.nodes:
+            dfs(node.tool_id)
+
+        # Create transformation steps
+        steps = []
+        for idx, tool_id in enumerate(order):
+            node = self.workflow.get_node_by_id(tool_id)
+            if node:
+                step = self._create_transformation_step(node, idx + 1)
+                steps.append(step)
+
+        return steps
+
+    def _create_transformation_step(self, node: AlteryxNode, order: int) -> TransformationStep:
+        """Create a transformation step from a node."""
+        # Determine medallion layer
+        is_final = not self.downstream.get(node.tool_id)  # No downstream = final output
+        layer = get_medallion_layer(node.category, is_final)
+
+        # Generate description
+        description = self._generate_step_description(node)
+
+        # Generate DBT hint
+        dbt_hint = self._generate_dbt_hint(node)
+
+        return TransformationStep(
+            order=order,
+            tool_id=node.tool_id,
+            tool_name=node.get_display_name(),
+            category=node.category,
+            description=description,
+            expression=node.expression,
+            medallion_layer=layer,
+            dbt_hint=dbt_hint,
+        )
+
+    def _generate_step_description(self, node: AlteryxNode) -> str:
+        """Generate a human-readable description of a transformation step."""
+        desc_parts = [node.plugin_name]
+
+        if node.category == ToolCategory.INPUT:
+            if node.source_path:
+                desc_parts.append(f"from '{node.source_path}'")
+            elif node.table_name:
+                desc_parts.append(f"from table '{node.table_name}'")
+            elif node.sql_query:
+                desc_parts.append("with custom SQL query")
+
+        elif node.category == ToolCategory.OUTPUT:
+            if node.target_path:
+                desc_parts.append(f"to '{node.target_path}'")
+            elif node.table_name:
+                desc_parts.append(f"to table '{node.table_name}'")
+
+        elif node.plugin_name == "Filter":
+            if node.expression:
+                desc_parts.append(f": {node.expression}")
+
+        elif node.plugin_name in ["Formula", "Multi-Field Formula"]:
+            formulas = node.configuration.get('formulas', [])
+            if formulas:
+                fields = [f.get('field', '') for f in formulas[:3]]
+                desc_parts.append(f": {', '.join(fields)}")
+                if len(formulas) > 3:
+                    desc_parts.append(f" (+{len(formulas) - 3} more)")
+
+        elif node.plugin_name == "Join":
+            if node.join_keys:
+                desc_parts.append(f"on {', '.join(node.join_keys[:2])}")
+
+        elif node.plugin_name == "Summarize":
+            if node.group_by_fields:
+                desc_parts.append(f"GROUP BY {', '.join(node.group_by_fields[:3])}")
+            if node.aggregations:
+                agg_desc = [f"{a['action']}({a['field']})" for a in node.aggregations[:2]]
+                desc_parts.append(f": {', '.join(agg_desc)}")
+
+        elif node.plugin_name == "Select":
+            if node.selected_fields:
+                desc_parts.append(f": {len(node.selected_fields)} fields")
+
+        elif node.plugin_name == "Sort":
+            sort_fields = node.configuration.get('sort_fields', [])
+            if sort_fields:
+                fields = [f"{sf['field']} {sf['order']}" for sf in sort_fields[:2]]
+                desc_parts.append(f"by {', '.join(fields)}")
+
+        elif node.is_macro:
+            desc_parts = [f"Macro: {node.plugin_name}"]
+            if node.macro_path:
+                desc_parts.append(f"({node.macro_path})")
+
+        return ' '.join(desc_parts)
+
+    def _generate_dbt_hint(self, node: AlteryxNode) -> str:
+        """Generate a DBT/SQL hint for a transformation."""
+        mapping = get_sql_mapping(node.plugin_name)
+        sql_template = mapping.get('sql', '-- Custom logic required')
+
+        if node.category == ToolCategory.INPUT:
+            if node.table_name:
+                return f"{{{{ source('schema', '{node.table_name}') }}}}"
+            elif node.source_path:
+                return f"-- External file: {node.source_path}\n-- Consider loading to staging table"
+            return sql_template
+
+        elif node.plugin_name == "Filter":
+            if node.expression:
+                # Convert Alteryx expression syntax to SQL
+                sql_expr = self._convert_alteryx_expression(node.expression)
+                return f"WHERE {sql_expr}"
+
+        elif node.plugin_name in ["Formula", "Multi-Field Formula"]:
+            formulas = node.configuration.get('formulas', [])
+            if formulas:
+                lines = []
+                for f in formulas:
+                    expr = self._convert_alteryx_expression(f.get('expression', ''))
+                    field = f.get('field', 'new_field')
+                    lines.append(f"  {expr} AS {field}")
+                return "SELECT\n" + ",\n".join(lines)
+
+        elif node.plugin_name == "Join":
+            join_type = node.join_type or "LEFT"
+            if node.join_keys:
+                conditions = []
+                for key in node.join_keys:
+                    parts = key.split('=')
+                    if len(parts) == 2:
+                        conditions.append(f"left_table.{parts[0].strip()} = right_table.{parts[1].strip()}")
+                return f"{join_type} JOIN right_table ON {' AND '.join(conditions)}"
+
+        elif node.plugin_name == "Summarize":
+            parts = []
+            if node.group_by_fields:
+                parts.append(f"GROUP BY {', '.join(node.group_by_fields)}")
+            if node.aggregations:
+                agg_parts = []
+                for agg in node.aggregations:
+                    action = agg.get('action', 'COUNT')
+                    field = agg.get('field', '*')
+                    output = agg.get('output_name', field)
+                    sql_func = AGGREGATION_MAP.get(action, action.upper())
+
+                    if sql_func.endswith('(DISTINCT'):
+                        agg_parts.append(f"{sql_func} {field}) AS {output}")
+                    else:
+                        agg_parts.append(f"{sql_func}({field}) AS {output}")
+                parts.insert(0, f"SELECT {', '.join(agg_parts)}")
+            return '\n'.join(parts)
+
+        elif node.plugin_name == "Union":
+            return "UNION ALL\n-- Stack multiple inputs"
+
+        elif node.plugin_name == "Select":
+            if node.selected_fields:
+                return f"SELECT {', '.join(node.selected_fields[:10])}"
+
+        return sql_template
+
+    def _convert_alteryx_expression(self, expr: str) -> str:
+        """Convert Alteryx expression syntax to SQL."""
+        if not expr:
+            return expr
+
+        sql = expr
+
+        # Replace Alteryx field references [FieldName] with SQL column references
+        import re
+        sql = re.sub(r'\[([^\]]+)\]', r'\1', sql)
+
+        # Common Alteryx to SQL function mappings
+        replacements = {
+            'IsNull': 'IS NULL',
+            'IsEmpty': "= ''",
+            'ToString': 'CAST',
+            'ToNumber': 'CAST',
+            'DateTimeFormat': 'DATE_FORMAT',
+            'DateTimeParse': 'DATE_PARSE',
+            'Trim': 'TRIM',
+            'UPPERCASE': 'UPPER',
+            'LOWERCASE': 'LOWER',
+            'Left': 'SUBSTRING',
+            'Right': 'RIGHT',
+            'Length': 'LENGTH',
+            'Contains': 'LIKE',
+            'StartsWith': 'LIKE',
+            'EndsWith': 'LIKE',
+            'IIF': 'CASE WHEN',
+            'IF': 'CASE WHEN',
+            'THEN': 'THEN',
+            'ELSE': 'ELSE',
+            'ENDIF': 'END',
+            'ELSEIF': 'WHEN',
+            'AND': 'AND',
+            'OR': 'OR',
+            'NOT': 'NOT',
+            '==': '=',
+            '!=': '<>',
+            '<>': '<>',
+        }
+
+        for alteryx_func, sql_func in replacements.items():
+            sql = sql.replace(alteryx_func, sql_func)
+
+        return sql
+
+    def get_data_lineage(self) -> List[DataLineage]:
+        """Trace data lineage from all sources to all targets."""
+        lineages = []
+
+        for source in self.workflow.sources:
+            for target in self.workflow.targets:
+                paths = self._find_all_paths(source.tool_id, target.tool_id)
+                for path_ids in paths:
+                    path_nodes = [self.workflow.get_node_by_id(tid) for tid in path_ids]
+                    path_nodes = [n for n in path_nodes if n is not None]
+
+                    if path_nodes:
+                        # Get transformation steps for this path
+                        steps = []
+                        for idx, node in enumerate(path_nodes):
+                            step = self._create_transformation_step(node, idx + 1)
+                            steps.append(step)
+
+                        lineage = DataLineage(
+                            source=source,
+                            target=target,
+                            path=path_nodes,
+                            transformations=steps,
+                        )
+                        lineages.append(lineage)
+
+        return lineages
+
+    def _find_all_paths(self, start_id: int, end_id: int, max_paths: int = 10) -> List[List[int]]:
+        """Find all paths from start to end node (limited to prevent explosion)."""
+        paths = []
+
+        def dfs(current: int, path: List[int], visited: Set[int]):
+            if len(paths) >= max_paths:
+                return
+
+            if current == end_id:
+                paths.append(path.copy())
+                return
+
+            for next_id in self.downstream.get(current, []):
+                if next_id not in visited:
+                    visited.add(next_id)
+                    path.append(next_id)
+                    dfs(next_id, path, visited)
+                    path.pop()
+                    visited.remove(next_id)
+
+        dfs(start_id, [start_id], {start_id})
+        return paths
+
+    def get_source_inventory(self) -> List[Dict]:
+        """Get inventory of all data sources."""
+        sources = []
+
+        for node in self.workflow.sources:
+            source_info = {
+                'name': node.get_display_name(),
+                'tool_id': node.tool_id,
+                'type': self._determine_source_type(node),
+                'path': node.source_path or node.table_name or 'N/A',
+                'connection': node.connection_string,
+                'sql_query': node.sql_query,
+            }
+            sources.append(source_info)
+
+        return sources
+
+    def get_target_inventory(self) -> List[Dict]:
+        """Get inventory of all output targets."""
+        targets = []
+
+        for node in self.workflow.targets:
+            target_info = {
+                'name': node.get_display_name(),
+                'tool_id': node.tool_id,
+                'type': self._determine_target_type(node),
+                'path': node.target_path or node.table_name or 'N/A',
+                'connection': node.connection_string,
+            }
+            targets.append(target_info)
+
+        return targets
+
+    def _determine_source_type(self, node: AlteryxNode) -> str:
+        """Determine the type of data source."""
+        if node.source_path:
+            path_lower = node.source_path.lower()
+            if path_lower.endswith('.csv'):
+                return 'CSV File'
+            elif path_lower.endswith(('.xls', '.xlsx')):
+                return 'Excel File'
+            elif path_lower.endswith('.json'):
+                return 'JSON File'
+            elif path_lower.endswith('.xml'):
+                return 'XML File'
+            elif path_lower.endswith('.yxdb'):
+                return 'Alteryx Database'
+            else:
+                return 'File'
+
+        if node.connection_string:
+            conn_lower = node.connection_string.lower()
+            if 'sqlserver' in conn_lower or 'mssql' in conn_lower:
+                return 'SQL Server'
+            elif 'oracle' in conn_lower:
+                return 'Oracle'
+            elif 'postgres' in conn_lower:
+                return 'PostgreSQL'
+            elif 'mysql' in conn_lower:
+                return 'MySQL'
+            elif 'snowflake' in conn_lower:
+                return 'Snowflake'
+            elif 'bigquery' in conn_lower:
+                return 'BigQuery'
+            elif 'redshift' in conn_lower:
+                return 'Redshift'
+            else:
+                return 'Database'
+
+        if 'S3' in node.tool_type:
+            return 'Amazon S3'
+        elif 'Azure' in node.tool_type:
+            return 'Azure Blob'
+        elif 'Snowflake' in node.tool_type:
+            return 'Snowflake'
+
+        return 'Unknown'
+
+    def _determine_target_type(self, node: AlteryxNode) -> str:
+        """Determine the type of output target."""
+        if node.plugin_name == "Browse":
+            return 'Preview/Browse'
+
+        if node.target_path:
+            path_lower = node.target_path.lower()
+            if path_lower.endswith('.csv'):
+                return 'CSV File'
+            elif path_lower.endswith(('.xls', '.xlsx')):
+                return 'Excel File'
+            elif path_lower.endswith('.json'):
+                return 'JSON File'
+            elif path_lower.endswith('.yxdb'):
+                return 'Alteryx Database'
+            else:
+                return 'File'
+
+        if node.connection_string or node.table_name:
+            return 'Database Table'
+
+        return 'Unknown'
+
+    def suggest_medallion_mapping(self) -> Dict[str, List[AlteryxNode]]:
+        """Suggest medallion layer assignments for workflow nodes."""
+        mapping = {
+            MedallionLayer.BRONZE.value: [],
+            MedallionLayer.SILVER.value: [],
+            MedallionLayer.GOLD.value: [],
+        }
+
+        for node in self.workflow.nodes:
+            is_final = not self.downstream.get(node.tool_id)
+            layer = get_medallion_layer(node.category, is_final)
+
+            # Adjust layer based on position in workflow
+            if node.category == ToolCategory.TRANSFORM:
+                # If it's a summarize tool at the end, it's likely Gold
+                if node.plugin_name == "Summarize" and is_final:
+                    layer = MedallionLayer.GOLD
+
+            mapping[layer.value].append(node)
+
+        return mapping
