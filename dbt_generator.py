@@ -525,14 +525,20 @@ class DBTGenerator:
                     order_parts.append(f"{field} {direction}")
                 order_clause = ", ".join(order_parts)
                 # MED-07 fix: ORDER BY in CTE doesn't guarantee ordering in final result
-                # Move ORDER BY to final SELECT or add LIMIT to force materialization
+                # Add TODO to remind user to add ORDER BY to final SELECT
+                self._add_todo(
+                    todo_type="add_order_by",
+                    description=f"Add ORDER BY to final SELECT to guarantee sort order",
+                    context=f"ORDER BY {order_clause}",
+                    priority="medium"
+                )
                 return f"""{cte_name} as (
     -- {node.plugin_name}: {node.annotation or ''}
-    -- NOTE: ORDER BY in CTE only affects this CTE's output, not final query result
-    -- To guarantee ordering, add ORDER BY to your final SELECT statement
+    -- IMPORTANT: SQL does not guarantee ordering from CTEs!
+    -- Add this ORDER BY clause to your final SELECT statement:
+    -- ORDER BY {order_clause}
     select *
     from {source_cte}
-    -- Sort order: {order_clause}
 )"""
 
         elif node.plugin_name == "Summarize":
@@ -835,16 +841,34 @@ class DBTGenerator:
         return columns
 
     def _read_parquet_columns(self, file_path: str) -> List[str]:
-        """Read column names from a Parquet file."""
+        """Read column names from a Parquet file.
+
+        MED-09 fix: Improved error handling - adds TODO when pyarrow missing.
+        """
         columns = []
         try:
             import pyarrow.parquet as pq
             parquet_file = pq.ParquetFile(file_path)
             columns = parquet_file.schema.names
         except ImportError:
-            print("Note: Install pyarrow for Parquet support: pip install pyarrow")
+            # MED-09 fix: Track missing dependency as a TODO and warn prominently
+            print(f"WARNING: Cannot read Parquet columns from {file_path}")
+            print("         pyarrow is not installed. Install with: pip install pyarrow")
+            print("         Columns will need to be specified manually in generated models.")
+            self._add_todo(
+                todo_type="missing_dependency",
+                description=f"Install pyarrow to auto-detect columns from Parquet file: {file_path}",
+                context="Run: pip install pyarrow",
+                priority="high"
+            )
         except Exception as e:
-            print(f"Warning: Error reading Parquet {file_path}: {e}")
+            print(f"WARNING: Error reading Parquet {file_path}: {e}")
+            self._add_todo(
+                todo_type="parquet_read_error",
+                description=f"Could not read Parquet file: {file_path}",
+                context=str(e),
+                priority="medium"
+            )
 
         return columns
 
@@ -1556,12 +1580,20 @@ class DBTGenerator:
                     order_parts.append(f"{field} {direction}")
                 order_clause = ", ".join(order_parts)
                 # MED-07 fix: ORDER BY in CTE doesn't guarantee ordering in final result
-                # Sort passes through all columns; ordering noted in comments
+                # Add TODO to remind user to add ORDER BY to final SELECT
+                self._add_todo(
+                    todo_type="add_order_by",
+                    description=f"Add ORDER BY to final SELECT to guarantee sort order",
+                    context=f"ORDER BY {order_clause}",
+                    priority="medium"
+                )
                 if upstream_columns:
                     col_list = self._format_column_list(upstream_columns)
                     return f"""{cte_name} as (
     -- {node.plugin_name}: {node.annotation or ''}
-    -- NOTE: To guarantee ordering, add ORDER BY to final SELECT: {order_clause}
+    -- IMPORTANT: SQL does not guarantee ordering from CTEs!
+    -- Add this ORDER BY clause to your final SELECT statement:
+    -- ORDER BY {order_clause}
     select
         {col_list}
     from {source_cte}
@@ -1569,7 +1601,9 @@ class DBTGenerator:
                 else:
                     return f"""{cte_name} as (
     -- {node.plugin_name}: {node.annotation or ''}
-    -- NOTE: To guarantee ordering, add ORDER BY to final SELECT: {order_clause}
+    -- IMPORTANT: SQL does not guarantee ordering from CTEs!
+    -- Add this ORDER BY clause to your final SELECT statement:
+    -- ORDER BY {order_clause}
     select
         * /* TODO: specify columns */
     from {source_cte}
