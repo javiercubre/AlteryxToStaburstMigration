@@ -4,6 +4,7 @@ Data models for Alteryx workflow parsing.
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Any
 from enum import Enum
+from pathlib import Path
 
 
 class ToolCategory(Enum):
@@ -66,6 +67,9 @@ class AlteryxNode:
     group_by_fields: List[str] = field(default_factory=list)
     aggregations: List[Dict[str, str]] = field(default_factory=list)
     selected_fields: List[str] = field(default_factory=list)
+
+    # S3 source mapping (V2) - set when source is replaced with S3 location
+    s3_mapping: Optional['S3SourceMapping'] = None
 
     def get_display_name(self) -> str:
         """Get a human-readable name for the tool."""
@@ -216,3 +220,148 @@ class DBTModel:
     source_models: List[str] = field(default_factory=list)
     description: Optional[str] = None
     original_tools: List[int] = field(default_factory=list)  # Tool IDs this model represents
+
+
+# =============================================================================
+# S3 Source Integration (V2)
+# =============================================================================
+
+@dataclass
+class S3SourceConfig:
+    """Configuration for an S3-compatible bucket source.
+
+    Supports AWS S3, MinIO, and other S3-compatible storage services.
+    """
+    bucket: str
+    prefix: str  # folder path in bucket (without leading slash)
+    region: str = "us-east-1"
+    endpoint: Optional[str] = None  # For S3-compatible services (MinIO, etc.)
+    file_format: str = "parquet"  # parquet, csv, json
+    file_pattern: Optional[str] = None  # e.g., "*.parquet"
+    credentials_profile: Optional[str] = None  # AWS credentials profile name
+
+    def get_s3_uri(self) -> str:
+        """Get the full S3 URI (s3a:// for Trino compatibility)."""
+        prefix = self.prefix.strip('/')
+        return f"s3a://{self.bucket}/{prefix}"
+
+    def get_s3_url(self) -> str:
+        """Get the S3 URL (s3:// format)."""
+        prefix = self.prefix.strip('/')
+        return f"s3://{self.bucket}/{prefix}"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            'bucket': self.bucket,
+            'prefix': self.prefix,
+            'region': self.region,
+            'endpoint': self.endpoint,
+            'file_format': self.file_format,
+            'file_pattern': self.file_pattern,
+            'credentials_profile': self.credentials_profile,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'S3SourceConfig':
+        """Create from dictionary (JSON deserialization)."""
+        return cls(
+            bucket=data['bucket'],
+            prefix=data.get('prefix', ''),
+            region=data.get('region', 'us-east-1'),
+            endpoint=data.get('endpoint'),
+            file_format=data.get('file_format', 'parquet'),
+            file_pattern=data.get('file_pattern'),
+            credentials_profile=data.get('credentials_profile'),
+        )
+
+    @classmethod
+    def from_s3_uri(cls, uri: str, **kwargs) -> 'S3SourceConfig':
+        """Parse an S3 URI into a config.
+
+        Supports formats:
+        - s3://bucket/prefix
+        - s3a://bucket/prefix
+        - bucket/prefix (assumes s3://)
+        """
+        # Remove protocol prefix
+        if uri.startswith('s3a://'):
+            uri = uri[6:]
+        elif uri.startswith('s3://'):
+            uri = uri[5:]
+
+        # Split bucket and prefix
+        parts = uri.split('/', 1)
+        bucket = parts[0]
+        prefix = parts[1] if len(parts) > 1 else ''
+
+        return cls(bucket=bucket, prefix=prefix, **kwargs)
+
+
+@dataclass
+class S3SourceMapping:
+    """Maps an Alteryx source to an S3 location.
+
+    Used to replace local/database sources with S3 bucket data during migration.
+    """
+    alteryx_source_name: str  # Original source from Alteryx (filename or connection)
+    s3_config: S3SourceConfig
+    table_name: str  # Target table name in Trino
+    columns: List[str] = field(default_factory=list)  # Column names if known
+    original_node_id: Optional[int] = None  # Reference to original Alteryx node
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            'alteryx_source_name': self.alteryx_source_name,
+            's3_config': self.s3_config.to_dict(),
+            'table_name': self.table_name,
+            'columns': self.columns,
+            'original_node_id': self.original_node_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'S3SourceMapping':
+        """Create from dictionary (JSON deserialization)."""
+        return cls(
+            alteryx_source_name=data['alteryx_source_name'],
+            s3_config=S3SourceConfig.from_dict(data['s3_config']),
+            table_name=data['table_name'],
+            columns=data.get('columns', []),
+            original_node_id=data.get('original_node_id'),
+        )
+
+
+@dataclass
+class YXDBReference:
+    """Reference to a YXDB file for gold layer validation.
+
+    The user provides a YXDB (Alteryx output) file to validate that the
+    gold layer produces equivalent output after migration.
+    """
+    file_path: Path
+    table_name: str  # Expected gold layer table name
+    columns: List[str] = field(default_factory=list)
+    row_count: Optional[int] = None
+    checksum: Optional[str] = None  # For exact match validation
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            'file_path': str(self.file_path),
+            'table_name': self.table_name,
+            'columns': self.columns,
+            'row_count': self.row_count,
+            'checksum': self.checksum,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'YXDBReference':
+        """Create from dictionary (JSON deserialization)."""
+        return cls(
+            file_path=Path(data['file_path']),
+            table_name=data['table_name'],
+            columns=data.get('columns', []),
+            row_count=data.get('row_count'),
+            checksum=data.get('checksum'),
+        )

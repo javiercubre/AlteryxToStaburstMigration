@@ -25,6 +25,7 @@ from alteryx_parser import AlteryxParser
 from macro_handler import MacroResolver, MacroInventory
 from doc_generator import DocumentationGenerator
 from dbt_generator import DBTGenerator
+from s3_config import S3ConfigResolver
 from models import AlteryxWorkflow
 from logging_config import setup_logging, get_logger
 
@@ -85,6 +86,26 @@ def analyze(args) -> int:
     for macro_dir in args.macro_dir or []:
         macro_resolver.add_search_directory(macro_dir)
 
+    # Setup S3 config resolver (V2)
+    s3_resolver = S3ConfigResolver(
+        interactive=not args.non_interactive,
+        skip_all=args.non_interactive,
+        default_bucket=args.s3_bucket,
+        default_region=args.s3_region,
+        default_endpoint=args.s3_endpoint,
+    )
+
+    # Load S3 config file if provided
+    if args.s3_config:
+        try:
+            s3_resolver.load_from_file(args.s3_config)
+        except FileNotFoundError:
+            logger.error(f"S3 config file not found: {args.s3_config}")
+            return 1
+        except Exception as e:
+            logger.error(f"Error loading S3 config: {e}")
+            return 1
+
     # Parse workflows
     workflows: List[AlteryxWorkflow] = []
     macro_inventory = MacroInventory()
@@ -120,6 +141,27 @@ def analyze(args) -> int:
         logger.error("\nNo workflows were successfully parsed.")
         return 1
 
+    # Resolve S3 sources if S3 bucket or config is provided (V2)
+    if args.s3_bucket or args.s3_config:
+        logger.info("\nResolving S3 source mappings...")
+        for workflow in workflows:
+            # Collect sources from workflow
+            sources = []
+            for source_node in workflow.sources:
+                source_name = source_node.source_path or source_node.table_name or f"source_{source_node.tool_id}"
+                sources.append({
+                    'name': Path(source_name).name if source_name else f"source_{source_node.tool_id}",
+                    'path': source_name,
+                    'node_id': source_node.tool_id,
+                })
+
+            if sources:
+                s3_mappings = s3_resolver.resolve_sources_batch(
+                    sources,
+                    workflow_name=workflow.metadata.name
+                )
+                logger.debug(f"  Resolved {len(s3_mappings)} S3 mappings for {workflow.metadata.name}")
+
     # Determine output directory
     output_dir = Path(args.output) if args.output else target_path / "alteryx_docs"
 
@@ -132,7 +174,8 @@ def analyze(args) -> int:
         dbt_generator = DBTGenerator(
             str(dbt_dir),
             interactive=not args.non_interactive,
-            default_schema=args.default_schema
+            default_schema=args.default_schema,
+            s3_resolver=s3_resolver if (args.s3_bucket or args.s3_config) else None
         )
         # Pass macro_inventory for reusable macro generation
         dbt_generator.generate(workflows, macro_inventory)
@@ -167,6 +210,15 @@ def analyze(args) -> int:
     macro_summary = macro_inventory.get_summary()
     logger.info(f"Macros found: {macro_summary['found']}")
     logger.info(f"Macros missing: {macro_summary['missing']}")
+
+    # S3 summary (V2)
+    if args.s3_bucket or args.s3_config:
+        s3_summary = s3_resolver.get_summary()
+        logger.info(f"S3 sources mapped: {s3_summary['resolved']}")
+        if s3_summary['skipped'] > 0:
+            logger.info(f"S3 sources skipped: {s3_summary['skipped']}")
+        if s3_summary['todos'] > 0:
+            logger.warning(f"S3 sources pending: {s3_summary['todos']} (see TODOs)")
 
     logger.info(f"\nDocumentation: {output_dir / 'index.md'}")
     if args.generate_dbt:
@@ -263,6 +315,32 @@ Examples:
         '--validate',
         action='store_true',
         help='Validate generated SQL by running dbt compile (requires dbt to be installed)'
+    )
+
+    # S3 source integration arguments (V2)
+    analyze_parser.add_argument(
+        '--s3-config',
+        metavar='FILE',
+        help='JSON file with S3 source mappings'
+    )
+
+    analyze_parser.add_argument(
+        '--s3-bucket',
+        metavar='NAME',
+        help='Default S3 bucket for all sources'
+    )
+
+    analyze_parser.add_argument(
+        '--s3-region',
+        default='us-east-1',
+        metavar='REGION',
+        help='Default AWS region for S3 sources (default: us-east-1)'
+    )
+
+    analyze_parser.add_argument(
+        '--s3-endpoint',
+        metavar='URL',
+        help='S3-compatible endpoint URL (for MinIO, etc.)'
     )
 
     # Parse arguments

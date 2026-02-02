@@ -1,15 +1,20 @@
 """
 Transformation analyzer for data lineage and flow analysis.
 """
-from typing import List, Dict, Set, Optional, Tuple
+from typing import List, Dict, Set, Optional, Tuple, TYPE_CHECKING
 from collections import defaultdict
+from pathlib import Path
 
 from models import (
     AlteryxWorkflow, AlteryxNode, AlteryxConnection,
-    TransformationStep, DataLineage, ToolCategory, MedallionLayer
+    TransformationStep, DataLineage, ToolCategory, MedallionLayer,
+    S3SourceMapping
 )
 from tool_mappings import get_medallion_layer, get_sql_mapping, AGGREGATION_MAP
 from formula_converter import FormulaConverter
+
+if TYPE_CHECKING:
+    from s3_config import S3ConfigResolver
 
 # Configuration constants
 MAX_LINEAGE_PATHS = 10  # Maximum paths to trace from source to target
@@ -437,3 +442,94 @@ class TransformationAnalyzer:
             mapping[layer.value].append(node)
 
         return mapping
+
+    # =========================================================================
+    # S3 Source Replacement (V2)
+    # =========================================================================
+
+    def get_sources_for_s3_mapping(self) -> List[Dict]:
+        """Get all sources in a format suitable for S3 mapping.
+
+        Returns:
+            List of dicts with keys: name, path, node_id, type, node
+        """
+        sources = []
+
+        for node in self.workflow.sources:
+            # Determine source name (filename or table name)
+            if node.source_path:
+                source_name = Path(node.source_path).name
+            elif node.table_name:
+                source_name = node.table_name
+            else:
+                source_name = f"source_{node.tool_id}"
+
+            source_info = {
+                'name': source_name,
+                'path': node.source_path or node.table_name or node.connection_string,
+                'node_id': node.tool_id,
+                'type': self._determine_source_type(node),
+                'node': node,
+            }
+            sources.append(source_info)
+
+        return sources
+
+    def replace_sources_with_s3(
+        self,
+        s3_resolver: 'S3ConfigResolver'
+    ) -> Dict[int, S3SourceMapping]:
+        """Replace Alteryx sources with S3 locations.
+
+        For each INPUT node, resolves (via prompt or config) the S3 location
+        where the source data now resides.
+
+        Args:
+            s3_resolver: S3ConfigResolver instance for interactive/config-based resolution
+
+        Returns:
+            Dict mapping tool_id to S3SourceMapping for all resolved sources
+        """
+        # Collect all sources
+        sources = self.get_sources_for_s3_mapping()
+
+        if not sources:
+            return {}
+
+        # Resolve sources via the S3 resolver
+        mappings = s3_resolver.resolve_sources_batch(
+            sources,
+            workflow_name=self.workflow.metadata.name
+        )
+
+        # Apply mappings to nodes
+        result = {}
+        for source_info in sources:
+            source_name = source_info['name']
+            node = source_info['node']
+
+            if source_name in mappings:
+                mapping = mappings[source_name]
+                mapping.original_node_id = node.tool_id
+
+                # Store mapping on the node
+                node.s3_mapping = mapping
+                result[node.tool_id] = mapping
+
+        return result
+
+    def get_s3_mapped_sources(self) -> List[AlteryxNode]:
+        """Get all source nodes that have S3 mappings.
+
+        Returns:
+            List of AlteryxNode objects that have s3_mapping set
+        """
+        return [node for node in self.workflow.sources if node.s3_mapping is not None]
+
+    def get_unmapped_sources(self) -> List[AlteryxNode]:
+        """Get all source nodes that don't have S3 mappings.
+
+        Returns:
+            List of AlteryxNode objects without s3_mapping
+        """
+        return [node for node in self.workflow.sources if node.s3_mapping is None]

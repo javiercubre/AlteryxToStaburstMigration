@@ -17,7 +17,8 @@ from datetime import datetime
 from dataclasses import dataclass, field
 
 from models import (
-    AlteryxWorkflow, AlteryxNode, MedallionLayer, ToolCategory
+    AlteryxWorkflow, AlteryxNode, MedallionLayer, ToolCategory,
+    S3SourceMapping, S3SourceConfig
 )
 from transformation_analyzer import TransformationAnalyzer
 from tool_mappings import get_dbt_prefix, AGGREGATION_MAP
@@ -25,6 +26,7 @@ from quality_validator import QualityValidator, create_validation_seed_template
 from formula_converter import FormulaConverter, convert_aggregation
 from logging_config import get_logger
 from column_detector import ColumnDetector
+import trino_s3_templates as s3_templates
 
 # Module logger
 logger = get_logger(__name__)
@@ -42,6 +44,9 @@ class SourceInfo:
     columns: List[str] = field(default_factory=list)
     description: str = ""
     source_path: str = ""
+    # S3 source info (V2)
+    s3_mapping: Optional[S3SourceMapping] = None
+    is_s3_source: bool = False
 
 
 @dataclass
@@ -71,12 +76,14 @@ class DBTGenerator:
 
     def __init__(self, output_dir: str, project_name: str = "alteryx_migration",
                  interactive: bool = True, generate_validation: bool = True,
-                 default_schema: str = DEFAULT_SCHEMA_NAME):
+                 default_schema: str = DEFAULT_SCHEMA_NAME, s3_resolver=None):
         self.output_dir = Path(output_dir)
         self.project_name = project_name
         self.interactive = interactive  # Whether to prompt user for missing info
         self.generate_validation = generate_validation  # Generate validation tests
         self.default_schema = default_schema  # Default schema name for sources
+        self.s3_resolver = s3_resolver  # S3 source resolver (V2)
+        self.s3_sources: Dict[str, SourceInfo] = {}  # table_name -> SourceInfo for S3 sources
         self.sources: Dict[str, Dict[str, SourceInfo]] = {}  # schema -> {table -> SourceInfo}
         self.models_info: Dict[str, ModelInfo] = {}  # model_name -> ModelInfo
         self.models_generated: List[str] = []
@@ -1339,6 +1346,7 @@ class DBTGenerator:
             "sources:",
         ]
 
+        # Regular sources (non-S3)
         for schema, tables in sorted(self.sources.items()):
             content.extend([
                 f"  - name: {schema}",
@@ -1359,6 +1367,36 @@ class DBTGenerator:
                         content.extend([
                             f"          - name: \"{col}\"",
                             f"            description: \"Column {col} from source\"",
+                        ])
+
+        # S3 sources (V2)
+        if self.s3_sources:
+            content.extend([
+                "",
+                "  - name: s3_raw",
+                "    description: \"S3 external tables for migrated Alteryx sources\"",
+                "    schema: s3_raw",
+                "    tables:",
+            ])
+
+            for table_name, source_info in sorted(self.s3_sources.items()):
+                s3_mapping = source_info.s3_mapping
+                content.extend([
+                    f"      - name: {table_name}",
+                    f"        description: \"{source_info.description}\"",
+                    "        meta:",
+                    f"          external_location: \"{s3_mapping.s3_config.get_s3_uri()}\"",
+                    f"          file_format: {s3_mapping.s3_config.file_format}",
+                    "          source_type: s3",
+                ])
+
+                # Add columns if we have them
+                if source_info.columns:
+                    content.append("        columns:")
+                    for col in source_info.columns:
+                        content.extend([
+                            f"          - name: \"{col}\"",
+                            f"            description: \"Column {col} from {s3_mapping.alteryx_source_name}\"",
                         ])
 
         self._write_file(
@@ -1679,6 +1717,11 @@ class DBTGenerator:
 
     def _generate_bronze_model(self, node: AlteryxNode, workflow_prefix: str) -> None:
         """Generate a bronze (staging) model with table materialization."""
+        # Check if this node has an S3 mapping (V2)
+        if node.s3_mapping:
+            self._generate_bronze_model_s3(node, workflow_prefix)
+            return
+
         schema = self._get_schema_name(node)
         table = self._get_table_name(node)
         model_name = f"stg_{workflow_prefix}_{table}"
@@ -3081,3 +3124,155 @@ tests:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, 'w', encoding='utf-8') as f:
             f.write(content)
+
+    # =========================================================================
+    # S3 Source Generation (V2)
+    # =========================================================================
+
+    def _generate_bronze_model_s3(self, node: AlteryxNode, workflow_prefix: str) -> None:
+        """Generate a bronze (staging) model for an S3 source (V2)."""
+        s3_mapping = node.s3_mapping
+        table_name = s3_mapping.table_name
+        model_name = f"stg_{workflow_prefix}_{table_name}"
+
+        # Set context for TODO tracking
+        self._current_model_name = model_name
+        self._current_layer = "bronze"
+
+        # Get columns from S3 mapping or try to detect
+        columns = s3_mapping.columns
+        if not columns:
+            # Try to get from s3_sources if already registered
+            if table_name in self.s3_sources:
+                columns = self.s3_sources[table_name].columns
+
+        # Register the S3 source
+        source_info = SourceInfo(
+            schema="s3_raw",
+            table=table_name,
+            columns=columns,
+            description=f"S3 source from {s3_mapping.alteryx_source_name}",
+            source_path=s3_mapping.s3_config.get_s3_uri(),
+            s3_mapping=s3_mapping,
+            is_s3_source=True,
+        )
+        self.s3_sources[table_name] = source_info
+
+        # Build column list
+        if columns:
+            col_list = ",\n        ".join([self._quote_column(c) for c in columns])
+            select_clause = f"        {col_list}"
+            source_col_list = col_list
+        else:
+            select_clause = "        * -- TODO: Replace with explicit column list"
+            source_col_list = "*\n        /* TODO: specify columns */"
+            self._add_todo(
+                todo_type="specify_columns",
+                description="Replace SELECT * with explicit column list",
+                context=f"S3 Source: {s3_mapping.s3_config.get_s3_uri()}",
+                priority="high"
+            )
+
+        # Generate S3-specific model with metadata columns
+        content = [
+            f"-- Bronze model for S3 source: {s3_mapping.alteryx_source_name}",
+            f"-- S3 Location: {s3_mapping.s3_config.get_s3_uri()}",
+            f"-- Format: {s3_mapping.s3_config.file_format}",
+            f"-- Generated from Alteryx workflow tool #{node.tool_id}",
+            "",
+            "{{",
+            "    config(",
+            "        materialized='table',",
+            "        tags=['bronze', 's3_source']",
+            "    )",
+            "}}",
+            "",
+            "with source as (",
+            "",
+            "    select",
+            f"        {source_col_list}",
+            f"    from {{{{ source('s3_raw', '{table_name}') }}}}",
+            "",
+            "),",
+            "",
+            "-- Data quality checks for S3 ingestion",
+            "validated as (",
+            "",
+            "    select",
+            select_clause + ",",
+            '        "$path" as _source_file,',
+            '        "$file_modified_time" as _source_modified_at',
+            "    from source",
+            "    -- Filter out incomplete uploads or invalid records",
+            "    where 1=1",
+            "",
+            ")",
+            "",
+            "select * from validated",
+        ]
+
+        self._write_file(
+            self.output_dir / "models" / "bronze" / f"{model_name}.sql",
+            "\n".join(content)
+        )
+        self.models_generated.append(model_name)
+
+        # Store model info for schema generation
+        self.models_info[model_name] = ModelInfo(
+            name=model_name,
+            layer="bronze",
+            columns=columns + ["_source_file", "_source_modified_at"] if columns else [],
+            description=f"S3 staging model for {s3_mapping.alteryx_source_name}",
+            source_tool_id=node.tool_id,
+        )
+
+    def generate_s3_setup_sql(self) -> Optional[str]:
+        """Generate Trino setup SQL for S3 external tables.
+
+        Returns:
+            SQL script string or None if no S3 sources
+        """
+        if not self.s3_sources:
+            return None
+
+        # Collect S3 mappings
+        mappings = [
+            source_info.s3_mapping
+            for source_info in self.s3_sources.values()
+            if source_info.s3_mapping
+        ]
+
+        if not mappings:
+            return None
+
+        # Generate setup SQL
+        setup_sql = s3_templates.generate_setup_sql(mappings)
+
+        # Write to file
+        setup_path = self.output_dir / "setup" / "s3_external_tables.sql"
+        self._write_file(setup_path, setup_sql)
+
+        logger.info(f"Generated S3 setup SQL: {setup_path}")
+        return setup_sql
+
+    def get_s3_source_summary(self) -> Dict:
+        """Get a summary of S3 sources configured.
+
+        Returns:
+            Dict with s3_sources count, tables, and locations
+        """
+        if not self.s3_sources:
+            return {"count": 0, "tables": [], "locations": []}
+
+        tables = list(self.s3_sources.keys())
+        locations = [
+            source_info.s3_mapping.s3_config.get_s3_uri()
+            for source_info in self.s3_sources.values()
+            if source_info.s3_mapping
+        ]
+
+        return {
+            "count": len(self.s3_sources),
+            "tables": tables,
+            "locations": locations,
+        }
