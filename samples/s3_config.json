@@ -1,0 +1,29 @@
+{
+  "default_region": "us-east-1",
+  "default_bucket": "my-data-lake",
+  "default_format": "parquet",
+  "endpoint": null,
+  "mappings": {
+    "customers.csv": {
+      "bucket": "my-data-lake",
+      "prefix": "bronze/customers/",
+      "format": "parquet",
+      "region": "us-east-1"
+    },
+    "orders.csv": {
+      "bucket": "my-data-lake",
+      "prefix": "bronze/orders/",
+      "format": "parquet"
+    },
+    "products.xlsx": {
+      "bucket": "my-data-lake",
+      "prefix": "bronze/products/",
+      "format": "parquet"
+    },
+    "*.csv": {
+      "bucket": "my-data-lake",
+      "prefix": "bronze/misc/",
+      "format": "csv"
+    }
+  }
+}

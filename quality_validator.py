@@ -6,13 +6,18 @@ Provides validation mechanisms to compare outputs during migration:
 - Data point quantities
 - Null value completeness per field
 - Layer-to-layer validation (bronze vs raw, silver vs staging, gold vs fed)
+- S3 source connectivity and schema validation
 
 Target Platform: Starburst (Trino-based)
 """
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, TYPE_CHECKING
 from datetime import datetime
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from s3_config import S3ConfigResolver
+    from models import S3SourceMapping
 
 
 @dataclass
@@ -69,6 +74,34 @@ class ValidationReport:
 
     # Discrepancies found
     discrepancies: List[str] = field(default_factory=list)
+
+
+@dataclass
+class S3ValidationResult:
+    """Validation result for an S3 source."""
+    source_name: str
+    s3_location: str
+    table_name: str
+    file_format: str
+
+    # Connectivity
+    connection_successful: bool = False
+    connection_error: Optional[str] = None
+
+    # Schema validation
+    expected_columns: List[str] = field(default_factory=list)
+    actual_columns: List[str] = field(default_factory=list)
+    schema_match: bool = True
+    missing_columns: List[str] = field(default_factory=list)
+    extra_columns: List[str] = field(default_factory=list)
+
+    # Data validation
+    row_count: int = 0
+    sample_rows_valid: bool = True
+
+    # Overall
+    validation_passed: bool = False
+    notes: str = ""
 
 
 class QualityValidator:
@@ -511,6 +544,283 @@ seeds:
 # int_customer_orders,8500,silver,2024-01-15
 # fct_daily_sales,365,gold,2024-01-15
 '''
+
+    # =========================================================================
+    # S3 Source Validation Methods
+    # =========================================================================
+
+    def generate_s3_validation_tests(self, s3_resolver: 'S3ConfigResolver') -> List[str]:
+        """
+        Generate validation tests for S3 sources.
+
+        Args:
+            s3_resolver: S3ConfigResolver with source mappings
+
+        Returns:
+            List of generated test file paths
+        """
+        if not s3_resolver or not s3_resolver.source_mappings:
+            return []
+
+        test_files = []
+        tests_dir = self.output_dir / "tests" / "s3_validation"
+        tests_dir.mkdir(parents=True, exist_ok=True)
+
+        # Generate connection test for all S3 sources
+        connection_test = self._generate_s3_connection_test(s3_resolver)
+        connection_test_path = tests_dir / "s3_connection_test.sql"
+        connection_test_path.write_text(connection_test)
+        test_files.append(str(connection_test_path))
+
+        # Generate individual source validation tests
+        for source_name, mapping in s3_resolver.source_mappings.items():
+            source_test = self._generate_s3_source_test(mapping)
+            safe_name = mapping.table_name.replace(" ", "_").lower()
+            source_test_path = tests_dir / f"validate_s3_{safe_name}.sql"
+            source_test_path.write_text(source_test)
+            test_files.append(str(source_test_path))
+
+        # Generate S3 validation schema
+        schema_content = self._generate_s3_validation_schema(s3_resolver)
+        schema_path = tests_dir / "_s3_validation.yml"
+        schema_path.write_text(schema_content)
+        test_files.append(str(schema_path))
+
+        return test_files
+
+    def _generate_s3_connection_test(self, s3_resolver: 'S3ConfigResolver') -> str:
+        """Generate a test to verify S3 connectivity for all sources."""
+        tests = []
+
+        for source_name, mapping in s3_resolver.source_mappings.items():
+            tests.append(f'''    -- Test: {mapping.table_name}
+    SELECT
+        '{mapping.table_name}' AS table_name,
+        '{mapping.s3_config.get_s3_uri()}' AS s3_location,
+        COUNT(*) AS accessible_rows
+    FROM hive.s3_raw.{mapping.table_name}
+    LIMIT 1''')
+
+        tests_sql = "\n    UNION ALL\n".join(tests)
+
+        return f'''-- S3 Connection Validation Test
+-- Verifies that all S3 external tables are accessible
+-- A passing test returns data for all configured sources
+
+-- Test connectivity to each S3 source
+WITH connection_tests AS (
+{tests_sql}
+),
+
+-- Check for any failures (tables that returned 0 or errored)
+validation_results AS (
+    SELECT
+        table_name,
+        s3_location,
+        accessible_rows,
+        CASE
+            WHEN accessible_rows > 0 THEN 'PASS'
+            ELSE 'FAIL - No data accessible'
+        END AS status
+    FROM connection_tests
+)
+
+-- Return summary
+SELECT
+    table_name,
+    s3_location,
+    status,
+    CURRENT_TIMESTAMP AS validated_at
+FROM validation_results
+ORDER BY table_name
+'''
+
+    def _generate_s3_source_test(self, mapping: 'S3SourceMapping') -> str:
+        """Generate a validation test for a specific S3 source."""
+        from models import S3SourceMapping  # Import here to avoid circular import
+
+        # Build column checks if columns are known
+        column_checks = ""
+        if mapping.columns:
+            checks = []
+            for col in mapping.columns:
+                safe_col = f'"{col}"' if not col.startswith('"') else col
+                checks.append(f'''CASE WHEN {safe_col} IS NOT NULL THEN 1 ELSE 0 END''')
+            col_names = [f"has_{c.replace(' ', '_').lower()}" for c in mapping.columns]
+            column_checks = f'''
+    -- Check column presence
+    column_presence AS (
+        SELECT
+            {", ".join([f"MAX({checks[i]}) AS {col_names[i]}" for i in range(len(checks))])}
+        FROM source_data
+    ),'''
+
+        return f'''-- S3 Source Validation: {mapping.table_name}
+-- Source: {mapping.alteryx_source_name}
+-- S3 Location: {mapping.s3_config.get_s3_uri()}
+-- Format: {mapping.s3_config.file_format}
+
+WITH source_data AS (
+    SELECT *
+    FROM hive.s3_raw.{mapping.table_name}
+    LIMIT 1000  -- Sample for validation
+),
+
+-- Check basic accessibility
+accessibility AS (
+    SELECT
+        COUNT(*) AS sample_count,
+        CASE WHEN COUNT(*) > 0 THEN 'PASS' ELSE 'FAIL' END AS access_status
+    FROM source_data
+),
+
+-- Check S3 metadata columns
+metadata_check AS (
+    SELECT
+        COUNT(DISTINCT "$path") AS unique_files,
+        MIN("$file_modified_time") AS oldest_file,
+        MAX("$file_modified_time") AS newest_file
+    FROM source_data
+),
+{column_checks}
+-- Summary
+validation_summary AS (
+    SELECT
+        '{mapping.table_name}' AS table_name,
+        '{mapping.s3_config.get_s3_uri()}' AS s3_location,
+        a.sample_count,
+        a.access_status,
+        m.unique_files,
+        m.oldest_file,
+        m.newest_file,
+        CURRENT_TIMESTAMP AS validated_at
+    FROM accessibility a
+    CROSS JOIN metadata_check m
+)
+
+SELECT *
+FROM validation_summary
+'''
+
+    def _generate_s3_validation_schema(self, s3_resolver: 'S3ConfigResolver') -> str:
+        """Generate schema.yml for S3 validation tests."""
+        sources = []
+        for mapping in s3_resolver.source_mappings.values():
+            sources.append(f'''      - name: {mapping.table_name}
+        description: "S3 source: {mapping.alteryx_source_name}"
+        meta:
+          s3_location: "{mapping.s3_config.get_s3_uri()}"
+          file_format: {mapping.s3_config.file_format}''')
+
+        sources_yaml = "\n".join(sources)
+
+        return f'''version: 2
+
+# S3 Source Validation Configuration
+# These tests verify S3 source accessibility and data quality
+# Run with: dbt test --select tag:s3_validation
+
+sources:
+  - name: s3_raw
+    description: "S3 external tables for migrated Alteryx sources"
+    schema: s3_raw
+    tables:
+{sources_yaml}
+
+# Validation test tags
+# - s3_validation: All S3 validation tests
+# - s3_connectivity: Connection tests only
+# - s3_schema: Schema validation tests
+'''
+
+    def generate_s3_connection_sql(self, s3_resolver: 'S3ConfigResolver') -> str:
+        """
+        Generate standalone SQL script to test S3 connectivity.
+
+        This can be run directly in Trino/Starburst to verify S3 setup
+        before running dbt.
+
+        Args:
+            s3_resolver: S3ConfigResolver with source mappings
+
+        Returns:
+            SQL script content
+        """
+        if not s3_resolver or not s3_resolver.source_mappings:
+            return "-- No S3 sources configured"
+
+        lines = [
+            "-- ============================================================",
+            "-- S3 Connection Test Script",
+            "-- Run this in Trino/Starburst to verify S3 connectivity",
+            "-- ============================================================",
+            "",
+            "-- 1. Verify schema exists",
+            "SHOW SCHEMAS FROM hive;",
+            "",
+            "-- 2. Verify tables exist",
+            "SHOW TABLES FROM hive.s3_raw;",
+            "",
+            "-- 3. Test each S3 source",
+        ]
+
+        for mapping in s3_resolver.source_mappings.values():
+            lines.extend([
+                "",
+                f"-- Test: {mapping.table_name}",
+                f"-- Source: {mapping.alteryx_source_name}",
+                f"-- S3 Location: {mapping.s3_config.get_s3_uri()}",
+                f"SELECT",
+                f"    '{mapping.table_name}' AS table_name,",
+                f"    COUNT(*) AS row_count,",
+                f"    COUNT(DISTINCT \"$path\") AS file_count",
+                f"FROM hive.s3_raw.{mapping.table_name};",
+            ])
+
+        lines.extend([
+            "",
+            "-- ============================================================",
+            "-- Expected: Each query should return row_count > 0",
+            "-- If any query fails, check:",
+            "-- 1. AWS credentials are configured correctly",
+            "-- 2. S3 bucket and prefix are accessible",
+            "-- 3. External table DDL matches file format",
+            "-- ============================================================",
+        ])
+
+        return "\n".join(lines)
+
+    def write_s3_validation_outputs(self, dbt_output_dir: Path,
+                                     s3_resolver: 'S3ConfigResolver') -> List[str]:
+        """
+        Write all S3 validation artifacts to the DBT project.
+
+        Args:
+            dbt_output_dir: Root of DBT project
+            s3_resolver: S3ConfigResolver with source mappings
+
+        Returns:
+            List of created file paths
+        """
+        if not s3_resolver or not s3_resolver.source_mappings:
+            return []
+
+        created_files = []
+
+        # Generate validation tests
+        test_files = self.generate_s3_validation_tests(s3_resolver)
+        created_files.extend(test_files)
+
+        # Generate standalone connection test SQL
+        setup_dir = dbt_output_dir / "setup"
+        setup_dir.mkdir(parents=True, exist_ok=True)
+
+        connection_sql = self.generate_s3_connection_sql(s3_resolver)
+        connection_path = setup_dir / "test_s3_connections.sql"
+        connection_path.write_text(connection_sql)
+        created_files.append(str(connection_path))
+
+        return created_files
 
 
 def create_validation_seed_template(output_dir: Path) -> str:

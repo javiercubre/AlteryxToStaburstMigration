@@ -25,8 +25,14 @@ python main.py analyze ./workflows --recursive              # Recursive scan
 python main.py analyze . --output ./docs --generate-dbt ./dbt  # Full output
 python main.py analyze . --non-interactive                  # Skip prompts
 
+# S3 source mapping
+python main.py analyze . --s3-bucket my-data-lake --generate-dbt ./dbt
+python main.py analyze . --s3-config s3_mappings.json --non-interactive
+
 # Run tests
 python tests/test_source_columns.py
+python tests/test_s3_config.py
+python tests/test_s3_integration.py
 ```
 
 ## Directory Structure
@@ -44,17 +50,23 @@ python tests/test_source_columns.py
 ├── formula_converter.py          # Alteryx formula → Trino SQL conversion
 ├── quality_validator.py          # Parallel validation for migration testing
 ├── models.py                     # Data classes & enums
-├── dbt_macros/                   # 22 reusable DBT macros (copied to generated project)
+├── s3_config.py                  # S3 source configuration and interactive resolution
+├── trino_s3_templates.py         # Trino external table SQL templates for S3
+├── dbt_macros/                   # 23 reusable DBT macros (copied to generated project)
 │   ├── aggregation.sql           # Summarize tool macros
 │   ├── filter_helpers.sql        # Filter macros
 │   ├── join_union.sql            # Join and Union macros
+│   ├── s3_source.sql             # S3 source reading macros
 │   └── ...                       # 19 more macro files
 ├── tests/
 │   ├── test_source_columns.py    # Column detection tests
 │   ├── test_formula_converter.py # Formula conversion tests
+│   ├── test_s3_config.py         # S3 configuration tests
+│   ├── test_s3_integration.py    # S3 integration tests
 │   └── test_data/                # Test fixtures (CSV, JSON)
 └── samples/
     ├── *.yxmd                    # Sample Alteryx workflows
+    ├── s3_config.json            # Sample S3 configuration
     └── macros/*.yxmc             # Sample macros
 ```
 
@@ -62,19 +74,21 @@ python tests/test_source_columns.py
 
 | Module | Lines | Purpose |
 |--------|-------|---------|
-| `main.py` | ~235 | CLI entry point, argument parsing, orchestration |
-| `models.py` | ~190 | Dataclasses and enums (AlteryxNode, AlteryxWorkflow, etc.) |
+| `main.py` | ~350 | CLI entry point, argument parsing, orchestration, S3 integration |
+| `models.py` | ~370 | Dataclasses and enums (AlteryxNode, AlteryxWorkflow, S3SourceConfig, etc.) |
 | `alteryx_parser.py` | ~555 | XML parsing using `xml.etree.ElementTree` |
 | `transformation_analyzer.py` | ~570 | Graph-based analysis, topological sort, lineage, macro hints |
 | `macro_handler.py` | ~280 | Interactive macro resolution, path caching |
-| `doc_generator.py` | ~910 | Markdown generation, Mermaid diagrams |
-| `dbt_generator.py` | ~2200 | **Macro-first DBT scaffolding** - Generates macro calls instead of raw SQL |
+| `doc_generator.py` | ~1100 | Markdown generation, Mermaid diagrams, S3 setup guides |
+| `dbt_generator.py` | ~3300 | **Macro-first DBT scaffolding** - Generates macro calls, S3 bronze models |
 | `tool_mappings.py` | ~450 | 100+ Alteryx tool → SQL/DBT/macro mappings |
-| `macro_mappings.py` | ~380 | **NEW**: Alteryx tool → DBT macro mappings (31 tools → 19 macro files) |
+| `macro_mappings.py` | ~380 | Alteryx tool → DBT macro mappings (31 tools → 19 macro files) |
 | `formula_converter.py` | ~400 | Alteryx formula → Trino SQL with 60+ function mappings |
-| `quality_validator.py` | ~350 | Parallel validation tests for migration (record counts, null checks) |
+| `quality_validator.py` | ~750 | Parallel validation tests, S3 connectivity validation |
+| `s3_config.py` | ~450 | S3 source configuration, interactive resolution, session caching |
+| `trino_s3_templates.py` | ~390 | Trino external table DDL, bronze model templates for S3 |
 
-**Total Macro Coverage:** 22 comprehensive DBT macros covering 85%+ of Alteryx tools
+**Total Macro Coverage:** 23 comprehensive DBT macros covering 85%+ of Alteryx tools
 
 ## Technology Stack
 
@@ -194,8 +208,60 @@ Edit `doc_generator.py` and add methods following existing patterns.
 ## Interactive vs Non-Interactive Mode
 
 The tool supports both modes:
-- **Interactive (default):** Prompts for missing macro paths
-- **Non-interactive (`--non-interactive`):** Skips prompts, documents macros as missing
+- **Interactive (default):** Prompts for missing macro paths and S3 source locations
+- **Non-interactive (`--non-interactive`):** Skips prompts, documents macros as missing, uses config files for S3
+
+## S3 Source Integration (V2)
+
+The tool supports replacing Alteryx file/database sources with S3-compatible bucket locations for Trino/Starburst.
+
+### CLI Arguments
+
+```bash
+--s3-config FILE     # JSON file with S3 mappings (see samples/s3_config.json)
+--s3-bucket NAME     # Default bucket for all sources
+--s3-region REGION   # Default region (default: us-east-1)
+--s3-endpoint URL    # For S3-compatible services (MinIO, etc.)
+```
+
+### S3 Config File Format
+
+```json
+{
+  "default_region": "us-east-1",
+  "default_bucket": "my-data-lake",
+  "endpoint": null,
+  "mappings": {
+    "customers.csv": {
+      "bucket": "my-data-lake",
+      "prefix": "bronze/customers/",
+      "format": "parquet"
+    },
+    "*.csv": {
+      "bucket": "my-data-lake",
+      "prefix": "bronze/misc/",
+      "format": "csv"
+    }
+  }
+}
+```
+
+### S3 Integration Flow
+
+1. **Source Detection:** Parser identifies INPUT nodes in Alteryx workflow
+2. **S3 Resolution:** `S3ConfigResolver` matches sources to S3 locations (config file or interactive prompts)
+3. **Bronze Model Generation:** `DBTGenerator` creates staging models with `{{ source('s3_raw', 'table') }}`
+4. **External Table DDL:** `trino_s3_templates.py` generates CREATE TABLE statements
+5. **Documentation:** `doc_generator.py` creates S3 setup guide with Trino configuration
+6. **Validation:** `quality_validator.py` generates S3 connectivity tests
+
+### Generated S3 Outputs
+
+- `setup/create_s3_tables.sql` - Trino external table DDL
+- `setup/test_s3_connections.sql` - S3 connectivity test script
+- `models/staging/_sources.yml` - DBT sources with S3 metadata
+- `tests/s3_validation/` - S3 validation tests
+- `docs/s3_setup_guide.md` - Trino/Starburst S3 configuration guide
 
 ## Generated Output Structure
 

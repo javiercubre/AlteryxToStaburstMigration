@@ -11,11 +11,16 @@ from typing import List, Dict, Optional, Any, Set, Tuple
 from datetime import datetime
 
 from models import (
-    AlteryxWorkflow, AlteryxNode, MacroInfo, MedallionLayer, ToolCategory
+    AlteryxWorkflow, AlteryxNode, MacroInfo, MedallionLayer, ToolCategory,
+    S3SourceMapping, S3SourceConfig
 )
 from transformation_analyzer import TransformationAnalyzer
 from macro_handler import MacroInventory
 from logging_config import get_logger
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from s3_config import S3ConfigResolver
 
 # Module logger
 logger = get_logger(__name__)
@@ -33,23 +38,25 @@ class DocumentationGenerator:
 
     def generate_all(self, workflows: List[AlteryxWorkflow],
                      macro_inventory: Optional[MacroInventory] = None,
-                     dbt_todos: Optional[List[Any]] = None) -> None:
+                     dbt_todos: Optional[List[Any]] = None,
+                     s3_resolver: Optional['S3ConfigResolver'] = None) -> None:
         """Generate all documentation for a list of workflows.
 
         Args:
             workflows: List of parsed Alteryx workflows
             macro_inventory: Optional macro inventory for macro documentation
             dbt_todos: Optional list of TodoItem objects from DBT scaffold generation
+            s3_resolver: Optional S3 config resolver for S3 source documentation
         """
         # Generate index
-        self._generate_index(workflows, macro_inventory, dbt_todos)
+        self._generate_index(workflows, macro_inventory, dbt_todos, s3_resolver)
 
         # Generate per-workflow docs
         for workflow in workflows:
             self._generate_workflow_doc(workflow)
 
         # Generate sources inventory
-        self._generate_sources_doc(workflows)
+        self._generate_sources_doc(workflows, s3_resolver)
 
         # Generate targets inventory
         self._generate_targets_doc(workflows)
@@ -65,11 +72,16 @@ class DocumentationGenerator:
         if dbt_todos:
             self._generate_todo_guide(dbt_todos)
 
+        # Generate S3 setup guide if S3 sources are configured
+        if s3_resolver and s3_resolver.source_mappings:
+            self._generate_s3_setup_guide(s3_resolver)
+
         logger.info(f"Documentation generated at: {self.output_dir}")
 
     def _generate_index(self, workflows: List[AlteryxWorkflow],
                         macro_inventory: Optional[MacroInventory],
-                        dbt_todos: Optional[List[Any]] = None) -> None:
+                        dbt_todos: Optional[List[Any]] = None,
+                        s3_resolver: Optional['S3ConfigResolver'] = None) -> None:
         """Generate the main index.md file."""
         content = [
             "# Alteryx to Starburst Migration Documentation",
@@ -94,6 +106,16 @@ class DocumentationGenerator:
             f"- **Total Outputs**: {total_targets}",
             f"- **Total Tools/Nodes**: {total_nodes}",
             f"- **Unique Macros**: {total_macros}",
+        ])
+
+        # Add S3 summary if available
+        if s3_resolver and s3_resolver.source_mappings:
+            s3_summary = s3_resolver.get_summary()
+            content.extend([
+                f"- **S3 Sources Mapped**: {s3_summary['resolved']}",
+            ])
+
+        content.extend([
             "",
             "## Workflows",
             "",
@@ -123,6 +145,10 @@ class DocumentationGenerator:
             "- [Macro Inventory](macros.md)",
             "- [Medallion Architecture Mapping](medallion_mapping.md)",
         ])
+
+        # Add S3 setup guide link if S3 sources are configured
+        if s3_resolver and s3_resolver.source_mappings:
+            content.append(f"- [**S3 Setup Guide**](s3_setup_guide.md) - Configuration for {len(s3_resolver.source_mappings)} S3 sources")
 
         # Add TODO guide link if there are TODOs
         if dbt_todos:
@@ -397,16 +423,51 @@ class DocumentationGenerator:
         else:
             return f'{node_id}["{label}"]'
 
-    def _generate_sources_doc(self, workflows: List[AlteryxWorkflow]) -> None:
+    def _generate_sources_doc(self, workflows: List[AlteryxWorkflow],
+                               s3_resolver: Optional['S3ConfigResolver'] = None) -> None:
         """Generate sources.md with all data sources."""
         content = [
             "# Data Sources Inventory",
             "",
             "Complete inventory of all data sources across workflows.",
             "",
+        ]
+
+        # S3 Data Sources section (if available)
+        if s3_resolver and s3_resolver.source_mappings:
+            content.extend([
+                "## S3 Data Sources",
+                "",
+                "Sources mapped to S3-compatible storage for Trino/Starburst.",
+                "",
+                "| Source | Bucket | Prefix | Format | Table Name |",
+                "|--------|--------|--------|--------|------------|",
+            ])
+
+            for source_name, mapping in sorted(s3_resolver.source_mappings.items()):
+                content.append(
+                    f"| {mapping.alteryx_source_name} "
+                    f"| `{mapping.s3_config.bucket}` "
+                    f"| `{mapping.s3_config.prefix}` "
+                    f"| {mapping.s3_config.file_format} "
+                    f"| `{mapping.table_name}` |"
+                )
+
+            content.extend([
+                "",
+                f"**Total S3 Sources**: {len(s3_resolver.source_mappings)}",
+                "",
+                "> See [S3 Setup Guide](s3_setup_guide.md) for configuration details.",
+                "",
+            ])
+
+        # Original Alteryx Sources section
+        content.extend([
+            "## Alteryx Sources (Original)",
+            "",
             "| Source | Type | Path/Connection | Used In |",
             "|--------|------|-----------------|---------|",
-        ]
+        ])
 
         # Collect all sources
         sources_map: Dict[str, Dict[str, Any]] = {}
@@ -911,6 +972,249 @@ class DocumentationGenerator:
         ])
 
         self._write_file(self.output_dir / "todo_guide.md", "\n".join(content))
+
+    def _generate_s3_setup_guide(self, s3_resolver: 'S3ConfigResolver') -> None:
+        """Generate S3 setup guide with Trino configuration instructions."""
+        content = [
+            "# S3 Setup Guide",
+            "",
+            "This guide provides configuration instructions for S3 data sources in Trino/Starburst.",
+            "",
+            "## Overview",
+            "",
+        ]
+
+        summary = s3_resolver.get_summary()
+        content.extend([
+            f"- **S3 Sources Configured**: {summary['resolved']}",
+            f"- **Default Bucket**: `{summary['default_bucket'] or 'Not set'}`",
+            f"- **Default Region**: `{summary['default_region']}`",
+            "",
+        ])
+
+        # Buckets used
+        buckets = set()
+        for mapping in s3_resolver.source_mappings.values():
+            buckets.add(mapping.s3_config.bucket)
+
+        content.extend([
+            "## S3 Buckets Used",
+            "",
+        ])
+        for bucket in sorted(buckets):
+            content.append(f"- `s3://{bucket}/`")
+        content.append("")
+
+        # Source Mappings Table
+        content.extend([
+            "## Source Mappings",
+            "",
+            "| Alteryx Source | S3 Location | Format | Trino Table |",
+            "|----------------|-------------|--------|-------------|",
+        ])
+
+        for source_name, mapping in sorted(s3_resolver.source_mappings.items()):
+            s3_uri = mapping.s3_config.get_s3_uri()
+            content.append(
+                f"| `{mapping.alteryx_source_name}` "
+                f"| `{s3_uri}` "
+                f"| {mapping.s3_config.file_format} "
+                f"| `s3_raw.{mapping.table_name}` |"
+            )
+
+        content.append("")
+
+        # Trino Configuration
+        content.extend([
+            "## Trino/Starburst Configuration",
+            "",
+            "### 1. Hive Connector with S3",
+            "",
+            "Add the following to your Trino catalog configuration (`etc/catalog/hive.properties`):",
+            "",
+            "```properties",
+            "connector.name=hive",
+            "hive.metastore.uri=thrift://metastore:9083",
+            "hive.s3.aws-access-key=${ENV:AWS_ACCESS_KEY_ID}",
+            "hive.s3.aws-secret-key=${ENV:AWS_SECRET_ACCESS_KEY}",
+            f"hive.s3.region={summary['default_region']}",
+            "hive.s3.path-style-access=false",
+            "```",
+            "",
+        ])
+
+        # Check for S3-compatible endpoints
+        has_custom_endpoint = any(
+            m.s3_config.endpoint for m in s3_resolver.source_mappings.values()
+        )
+        if has_custom_endpoint:
+            endpoints = set(
+                m.s3_config.endpoint for m in s3_resolver.source_mappings.values()
+                if m.s3_config.endpoint
+            )
+            content.extend([
+                "### S3-Compatible Endpoint Configuration",
+                "",
+                "For S3-compatible services (MinIO, etc.), add:",
+                "",
+                "```properties",
+            ])
+            for endpoint in endpoints:
+                content.append(f"hive.s3.endpoint={endpoint}")
+            content.extend([
+                "hive.s3.path-style-access=true",
+                "```",
+                "",
+            ])
+
+        # Schema Creation
+        content.extend([
+            "### 2. Create S3 Schema",
+            "",
+            "Run this SQL in Trino to create the schema for S3 external tables:",
+            "",
+            "```sql",
+            "-- Create schema for S3 external tables",
+            "CREATE SCHEMA IF NOT EXISTS hive.s3_raw",
+        ])
+
+        if buckets:
+            first_bucket = sorted(buckets)[0]
+            content.append(f"WITH (location = 's3a://{first_bucket}/');")
+        else:
+            content.append("WITH (location = 's3a://your-bucket/');")
+
+        content.extend([
+            "```",
+            "",
+        ])
+
+        # External Table Creation
+        content.extend([
+            "### 3. Create External Tables",
+            "",
+            "Run these SQL statements to create external tables for each S3 source:",
+            "",
+        ])
+
+        for source_name, mapping in sorted(s3_resolver.source_mappings.items()):
+            s3_uri = mapping.s3_config.get_s3_uri()
+            file_format = mapping.s3_config.file_format.upper()
+
+            content.extend([
+                f"#### {mapping.table_name}",
+                "",
+                "```sql",
+                f"CREATE TABLE IF NOT EXISTS hive.s3_raw.{mapping.table_name} (",
+            ])
+
+            if mapping.columns:
+                for i, col in enumerate(mapping.columns):
+                    comma = "," if i < len(mapping.columns) - 1 else ""
+                    content.append(f'    "{col}" VARCHAR{comma}')
+            else:
+                content.append("    -- TODO: Add column definitions")
+
+            content.extend([
+                ")",
+                "WITH (",
+                f"    external_location = '{s3_uri}',",
+                f"    format = '{file_format}'",
+            ])
+
+            if file_format == "CSV":
+                content.append("    , skip_header_line_count = 1")
+
+            content.extend([
+                ");",
+                "```",
+                "",
+            ])
+
+        # DBT Sources Configuration
+        content.extend([
+            "## DBT Sources Configuration",
+            "",
+            "The generated `_sources.yml` file includes S3 source definitions:",
+            "",
+            "```yaml",
+            "version: 2",
+            "",
+            "sources:",
+            "  - name: s3_raw",
+            "    description: 'S3 external tables for Alteryx source data'",
+            "    schema: s3_raw",
+            "    tables:",
+        ])
+
+        for source_name, mapping in sorted(s3_resolver.source_mappings.items()):
+            content.extend([
+                f"      - name: {mapping.table_name}",
+                f"        description: 'Data from {mapping.alteryx_source_name}'",
+                "        meta:",
+                f"          external_location: '{mapping.s3_config.get_s3_uri()}'",
+                f"          file_format: {mapping.s3_config.file_format}",
+            ])
+
+        content.extend([
+            "```",
+            "",
+        ])
+
+        # AWS Credentials
+        content.extend([
+            "## AWS Credentials Setup",
+            "",
+            "### Option 1: Environment Variables",
+            "",
+            "```bash",
+            "export AWS_ACCESS_KEY_ID=your-access-key",
+            "export AWS_SECRET_ACCESS_KEY=your-secret-key",
+            f"export AWS_REGION={summary['default_region']}",
+            "```",
+            "",
+            "### Option 2: AWS Profile",
+            "",
+            "Configure `~/.aws/credentials`:",
+            "",
+            "```ini",
+            "[default]",
+            "aws_access_key_id = your-access-key",
+            "aws_secret_access_key = your-secret-key",
+            f"region = {summary['default_region']}",
+            "```",
+            "",
+        ])
+
+        # Validation
+        content.extend([
+            "## Validation Steps",
+            "",
+            "After configuration, verify connectivity:",
+            "",
+            "```sql",
+            "-- 1. Check schema exists",
+            "SHOW SCHEMAS FROM hive;",
+            "",
+            "-- 2. Check tables exist",
+            "SHOW TABLES FROM hive.s3_raw;",
+            "",
+            "-- 3. Test data access",
+        ])
+
+        if s3_resolver.source_mappings:
+            first_mapping = list(s3_resolver.source_mappings.values())[0]
+            content.append(f"SELECT * FROM hive.s3_raw.{first_mapping.table_name} LIMIT 10;")
+
+        content.extend([
+            "```",
+            "",
+            "---",
+            "",
+            "[Back to Index](index.md)",
+        ])
+
+        self._write_file(self.output_dir / "s3_setup_guide.md", "\n".join(content))
 
     def _write_file(self, path: Path, content: str) -> None:
         """Write content to a file."""
