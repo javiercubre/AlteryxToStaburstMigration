@@ -11,6 +11,9 @@ from models import (
 from tool_mappings import get_medallion_layer, get_sql_mapping, AGGREGATION_MAP
 from formula_converter import FormulaConverter
 
+# Configuration constants
+MAX_LINEAGE_PATHS = 10  # Maximum paths to trace from source to target
+
 
 class TransformationAnalyzer:
     """Analyzes workflow transformations and builds data lineage."""
@@ -32,7 +35,11 @@ class TransformationAnalyzer:
             self.upstream[conn.destination_id].append(conn.origin_id)
 
     def get_ordered_transformations(self) -> List[TransformationStep]:
-        """Get all transformations in execution order using topological sort."""
+        """Get all transformations in execution order using topological sort.
+
+        Returns:
+            List of TransformationStep objects ordered by execution sequence.
+        """
         # Find execution order via topological sort
         visited = set()
         order = []
@@ -228,7 +235,14 @@ class TransformationAnalyzer:
         return self._formula_converter.convert(expr)
 
     def get_data_lineage(self) -> List[DataLineage]:
-        """Trace data lineage from all sources to all targets."""
+        """Trace data lineage from all sources to all targets.
+
+        Finds all paths between source nodes and target nodes in the workflow,
+        including the transformation steps along each path.
+
+        Returns:
+            List of DataLineage objects representing source-to-target paths.
+        """
         lineages = []
 
         for source in self.workflow.sources:
@@ -255,7 +269,7 @@ class TransformationAnalyzer:
 
         return lineages
 
-    def _find_all_paths(self, start_id: int, end_id: int, max_paths: int = 10) -> List[List[int]]:
+    def _find_all_paths(self, start_id: int, end_id: int, max_paths: int = MAX_LINEAGE_PATHS) -> List[List[int]]:
         """Find all paths from start to end node (limited to prevent explosion)."""
         paths = []
 
@@ -279,7 +293,11 @@ class TransformationAnalyzer:
         return paths
 
     def get_source_inventory(self) -> List[Dict]:
-        """Get inventory of all data sources."""
+        """Get inventory of all data sources.
+
+        Returns:
+            List of dicts with keys: name, tool_id, type, path, connection, sql_query
+        """
         sources = []
 
         for node in self.workflow.sources:
@@ -296,7 +314,11 @@ class TransformationAnalyzer:
         return sources
 
     def get_target_inventory(self) -> List[Dict]:
-        """Get inventory of all output targets."""
+        """Get inventory of all output targets.
+
+        Returns:
+            List of dicts with keys: name, tool_id, type, path, connection
+        """
         targets = []
 
         for node in self.workflow.targets:
@@ -380,7 +402,14 @@ class TransformationAnalyzer:
         return 'Unknown'
 
     def suggest_medallion_mapping(self) -> Dict[str, List[AlteryxNode]]:
-        """Suggest medallion layer assignments for workflow nodes."""
+        """Suggest medallion layer assignments for workflow nodes.
+
+        Categorizes nodes into bronze (staging), silver (intermediate),
+        and gold (marts) layers based on their tool type and position.
+
+        Returns:
+            Dict with keys 'bronze', 'silver', 'gold' mapping to lists of AlteryxNode.
+        """
         mapping = {
             MedallionLayer.BRONZE.value: [],
             MedallionLayer.SILVER.value: [],

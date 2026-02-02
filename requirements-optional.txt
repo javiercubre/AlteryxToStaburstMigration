@@ -1,0 +1,38 @@
+# Alteryx to DBT Documentation Generator - Optional Dependencies
+#
+# These dependencies enable additional features but are NOT required
+# for basic operation. Install with:
+#   pip install -r requirements-optional.txt
+
+# ============================================================
+# FILE FORMAT SUPPORT
+# ============================================================
+
+# Excel file support (.xlsx) - for reading column headers from Excel files
+openpyxl>=3.0.0
+
+# Legacy Excel support (.xls) - for older Excel format
+xlrd>=2.0.0
+
+# Parquet file support - for reading column headers from Parquet files
+pyarrow>=10.0.0
+
+# ============================================================
+# TESTING
+# ============================================================
+
+# pytest test framework (LOW-06 fix)
+pytest>=7.0.0
+
+# Coverage reporting with pytest
+pytest-cov>=4.0.0
+
+# ============================================================
+# ENHANCED FUNCTIONALITY (future)
+# ============================================================
+
+# Faster/more robust XML parsing (alternative to stdlib)
+# lxml>=4.9.0
+
+# Advanced graph analysis for workflow visualization
+# networkx>=3.0

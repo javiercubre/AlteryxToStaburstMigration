@@ -3,9 +3,13 @@ Tests for the Alteryx formula to Trino SQL converter.
 
 Tests that Alteryx formulas are correctly converted to their
 Trino SQL equivalents.
+
+LOW-06 fix: Migrated to pytest framework.
 """
 import os
 import sys
+
+import pytest
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,267 +21,251 @@ from formula_converter import (
 )
 
 
-def test_field_references():
-    """Test that Alteryx field references [FieldName] are converted to SQL."""
-    converter = FormulaConverter()
+@pytest.fixture
+def converter():
+    """Create a FormulaConverter instance for testing."""
+    return FormulaConverter()
 
-    # Basic field reference
-    result = converter.convert('[CustomerName]')
-    assert '"CustomerName"' in result, f"Expected quoted field, got {result}"
 
-    # Multiple field references
-    result = converter.convert('[Field1] + [Field2]')
-    assert '"Field1"' in result and '"Field2"' in result, f"Got {result}"
+class TestFieldReferences:
+    """Tests for field reference conversion."""
 
-    print("[PASS] Field references conversion works correctly")
+    def test_basic_field_reference(self, converter):
+        """Test that Alteryx field references [FieldName] are converted to SQL."""
+        result = converter.convert('[CustomerName]')
+        assert '"CustomerName"' in result
 
+    def test_multiple_field_references(self, converter):
+        """Test multiple field references in one expression."""
+        result = converter.convert('[Field1] + [Field2]')
+        assert '"Field1"' in result and '"Field2"' in result
 
-def test_operator_conversion():
-    """Test that Alteryx operators are converted to SQL."""
-    converter = FormulaConverter()
 
-    # Equality operator
-    result = converter.convert('[Status] == "Active"')
-    assert '=' in result and '==' not in result, f"Got {result}"
+class TestOperatorConversion:
+    """Tests for operator conversion."""
 
-    # AND/OR operators
-    result = converter.convert('[A] && [B]')
-    assert ' AND ' in result, f"Got {result}"
+    def test_equality_operator(self, converter):
+        """Test that == is converted to =."""
+        result = converter.convert('[Status] == "Active"')
+        assert '=' in result and '==' not in result
 
-    result = converter.convert('[A] || [B]')
-    assert ' OR ' in result, f"Got {result}"
+    def test_and_operator(self, converter):
+        """Test && to AND conversion."""
+        result = converter.convert('[A] && [B]')
+        assert ' AND ' in result
 
-    print("[PASS] Operator conversion works correctly")
+    def test_or_operator(self, converter):
+        """Test || to OR conversion."""
+        result = converter.convert('[A] || [B]')
+        assert ' OR ' in result
 
 
-def test_iif_conversion():
-    """Test IIF to CASE WHEN conversion."""
-    converter = FormulaConverter()
+class TestIIFConversion:
+    """Tests for IIF to CASE WHEN conversion."""
 
-    # Simple IIF
-    result = converter.convert('IIF([Status]="Active", 1, 0)')
-    assert 'CASE WHEN' in result and 'THEN' in result and 'ELSE' in result and 'END' in result, \
-        f"Expected CASE WHEN, got {result}"
+    def test_simple_iif(self, converter):
+        """Test simple IIF conversion."""
+        result = converter.convert('IIF([Status]="Active", 1, 0)')
+        assert 'CASE WHEN' in result
+        assert 'THEN' in result
+        assert 'ELSE' in result
+        assert 'END' in result
+
+    def test_nested_iif(self, converter):
+        """Test nested IIF conversion."""
+        result = converter.convert('IIF([A]>10, IIF([B]>5, "High", "Med"), "Low")')
+        assert result.count('CASE WHEN') == 2
+
+
+class TestNullHandling:
+    """Tests for null handling functions."""
 
-    # Nested IIF
-    result = converter.convert('IIF([A]>10, IIF([B]>5, "High", "Med"), "Low")')
-    assert result.count('CASE WHEN') == 2, f"Expected 2 CASE WHEN, got {result}"
+    def test_isnull_conversion(self, converter):
+        """Test IsNull function conversion."""
+        result = converter.convert('IsNull([Field])')
+        assert 'IS NULL' in result
 
-    print("[PASS] IIF to CASE WHEN conversion works correctly")
+    def test_isempty_conversion(self, converter):
+        """Test IsEmpty function conversion."""
+        result = converter.convert('IsEmpty([Field])')
+        assert "= ''" in result
 
+
+class TestStringFunctions:
+    """Tests for string function conversions."""
 
-def test_isnull_conversion():
-    """Test IsNull function conversion."""
-    converter = FormulaConverter()
+    def test_trim(self, converter):
+        """Test Trim function conversion."""
+        result = converter.convert('Trim([Name])')
+        assert 'TRIM' in result
 
-    result = converter.convert('IsNull([Field])')
-    assert 'IS NULL' in result, f"Expected IS NULL, got {result}"
+    def test_uppercase(self, converter):
+        """Test UpperCase function conversion."""
+        result = converter.convert('UpperCase([Name])')
+        assert 'UPPER' in result
 
-    print("[PASS] IsNull conversion works correctly")
+    def test_lowercase(self, converter):
+        """Test LowerCase function conversion."""
+        result = converter.convert('LowerCase([Name])')
+        assert 'LOWER' in result
 
+    def test_length(self, converter):
+        """Test Length function conversion."""
+        result = converter.convert('Length([Name])')
+        assert 'LENGTH' in result
 
-def test_isempty_conversion():
-    """Test IsEmpty function conversion."""
-    converter = FormulaConverter()
+    def test_replace(self, converter):
+        """Test Replace function conversion."""
+        result = converter.convert('Replace([Text], "old", "new")')
+        assert 'REPLACE' in result
 
-    result = converter.convert('IsEmpty([Field])')
-    assert "= ''" in result, f"Expected empty string check, got {result}"
+    def test_contains(self, converter):
+        """Test Contains function conversion."""
+        result = converter.convert('Contains([Text], "search")')
+        assert 'STRPOS' in result and '> 0' in result
 
-    print("[PASS] IsEmpty conversion works correctly")
 
+class TestMathFunctions:
+    """Tests for math function conversions."""
 
-def test_string_functions():
-    """Test string function conversions."""
-    converter = FormulaConverter()
+    def test_abs(self, converter):
+        """Test Abs function conversion."""
+        result = converter.convert('Abs([Value])')
+        assert 'ABS' in result
 
-    # Trim
-    result = converter.convert('Trim([Name])')
-    assert 'TRIM' in result, f"Expected TRIM, got {result}"
+    def test_ceil(self, converter):
+        """Test Ceil function conversion."""
+        result = converter.convert('Ceil([Value])')
+        assert 'CEIL' in result
 
-    # UpperCase
-    result = converter.convert('UpperCase([Name])')
-    assert 'UPPER' in result, f"Expected UPPER, got {result}"
+    def test_floor(self, converter):
+        """Test Floor function conversion."""
+        result = converter.convert('Floor([Value])')
+        assert 'FLOOR' in result
 
-    # LowerCase
-    result = converter.convert('LowerCase([Name])')
-    assert 'LOWER' in result, f"Expected LOWER, got {result}"
+    def test_round(self, converter):
+        """Test Round function conversion."""
+        result = converter.convert('Round([Value], 2)')
+        assert 'ROUND' in result
 
-    # Length
-    result = converter.convert('Length([Name])')
-    assert 'LENGTH' in result, f"Expected LENGTH, got {result}"
+    def test_sqrt(self, converter):
+        """Test Sqrt function conversion."""
+        result = converter.convert('Sqrt([Value])')
+        assert 'SQRT' in result
 
-    # Replace
-    result = converter.convert('Replace([Text], "old", "new")')
-    assert 'REPLACE' in result, f"Expected REPLACE, got {result}"
 
-    # Contains
-    result = converter.convert('Contains([Text], "search")')
-    assert 'STRPOS' in result and '> 0' in result, f"Expected STRPOS > 0, got {result}"
+class TestDateFunctions:
+    """Tests for date/time function conversions."""
 
-    print("[PASS] String function conversions work correctly")
+    def test_datetimenow(self, converter):
+        """Test DateTimeNow function conversion."""
+        result = converter.convert('DateTimeNow()')
+        assert 'CURRENT_TIMESTAMP' in result
 
+    def test_datetimeyear(self, converter):
+        """Test DateTimeYear function conversion."""
+        result = converter.convert('DateTimeYear([Date])')
+        assert 'YEAR' in result
 
-def test_math_functions():
-    """Test math function conversions."""
-    converter = FormulaConverter()
+    def test_datetimemonth(self, converter):
+        """Test DateTimeMonth function conversion."""
+        result = converter.convert('DateTimeMonth([Date])')
+        assert 'MONTH' in result
 
-    # Abs
-    result = converter.convert('Abs([Value])')
-    assert 'ABS' in result, f"Expected ABS, got {result}"
+    def test_datetimeday(self, converter):
+        """Test DateTimeDay function conversion."""
+        result = converter.convert('DateTimeDay([Date])')
+        assert 'DAY' in result
 
-    # Ceil
-    result = converter.convert('Ceil([Value])')
-    assert 'CEIL' in result, f"Expected CEIL, got {result}"
 
-    # Floor
-    result = converter.convert('Floor([Value])')
-    assert 'FLOOR' in result, f"Expected FLOOR, got {result}"
+class TestConversionFunctions:
+    """Tests for type conversion function conversions."""
 
-    # Round
-    result = converter.convert('Round([Value], 2)')
-    assert 'ROUND' in result, f"Expected ROUND, got {result}"
+    def test_tonumber(self, converter):
+        """Test ToNumber function conversion."""
+        result = converter.convert('ToNumber([StringField])')
+        assert 'CAST' in result and 'DOUBLE' in result
 
-    # Sqrt
-    result = converter.convert('Sqrt([Value])')
-    assert 'SQRT' in result, f"Expected SQRT, got {result}"
+    def test_tostring(self, converter):
+        """Test ToString function conversion."""
+        result = converter.convert('ToString([NumField])')
+        assert 'CAST' in result and 'VARCHAR' in result
 
-    print("[PASS] Math function conversions work correctly")
+    def test_tointeger(self, converter):
+        """Test ToInteger function conversion."""
+        result = converter.convert('ToInteger([StringField])')
+        assert 'CAST' in result and 'BIGINT' in result
 
 
-def test_date_functions():
-    """Test date/time function conversions."""
-    converter = FormulaConverter()
+class TestMinMaxFunctions:
+    """Tests for Min/Max function conversions."""
 
-    # DateTimeNow
-    result = converter.convert('DateTimeNow()')
-    assert 'CURRENT_TIMESTAMP' in result, f"Expected CURRENT_TIMESTAMP, got {result}"
+    def test_min(self, converter):
+        """Test Min function conversion."""
+        result = converter.convert('Min([A], [B], [C])')
+        assert 'LEAST' in result
 
-    # DateTimeYear
-    result = converter.convert('DateTimeYear([Date])')
-    assert 'YEAR' in result, f"Expected YEAR, got {result}"
+    def test_max(self, converter):
+        """Test Max function conversion."""
+        result = converter.convert('Max([A], [B], [C])')
+        assert 'GREATEST' in result
 
-    # DateTimeMonth
-    result = converter.convert('DateTimeMonth([Date])')
-    assert 'MONTH' in result, f"Expected MONTH, got {result}"
 
-    # DateTimeDay
-    result = converter.convert('DateTimeDay([Date])')
-    assert 'DAY' in result, f"Expected DAY, got {result}"
+class TestCoalesce:
+    """Tests for Coalesce function conversion."""
 
-    print("[PASS] Date function conversions work correctly")
+    def test_coalesce(self, converter):
+        """Test Coalesce function conversion."""
+        result = converter.convert('Coalesce([A], [B], "default")')
+        assert 'COALESCE' in result
 
 
-def test_conversion_functions():
-    """Test type conversion function conversions."""
-    converter = FormulaConverter()
+class TestComplexExpressions:
+    """Tests for complex nested expressions."""
 
-    # ToNumber
-    result = converter.convert('ToNumber([StringField])')
-    assert 'CAST' in result and 'DOUBLE' in result, f"Expected CAST AS DOUBLE, got {result}"
+    def test_complex_nested_expression(self, converter):
+        """Test conversion of complex nested expressions."""
+        expr = 'IIF(IsNull([Amount]), 0, Round([Amount] * 1.1, 2))'
+        result = converter.convert(expr)
 
-    # ToString
-    result = converter.convert('ToString([NumField])')
-    assert 'CAST' in result and 'VARCHAR' in result, f"Expected CAST AS VARCHAR, got {result}"
+        assert 'CASE WHEN' in result
+        assert 'IS NULL' in result
+        assert 'ROUND' in result
 
-    # ToInteger
-    result = converter.convert('ToInteger([StringField])')
-    assert 'CAST' in result and 'BIGINT' in result, f"Expected CAST AS BIGINT, got {result}"
 
-    print("[PASS] Conversion function conversions work correctly")
+class TestAggregationConversion:
+    """Tests for aggregation function conversions."""
 
+    def test_sum(self):
+        """Test Sum aggregation conversion."""
+        result = convert_aggregation('Sum', '"Amount"')
+        assert result == 'SUM("Amount")'
 
-def test_min_max_functions():
-    """Test Min/Max function conversions."""
-    converter = FormulaConverter()
+    def test_count(self):
+        """Test Count aggregation conversion."""
+        result = convert_aggregation('Count', '"ID"')
+        assert result == 'COUNT("ID")'
 
-    # Min
-    result = converter.convert('Min([A], [B], [C])')
-    assert 'LEAST' in result, f"Expected LEAST, got {result}"
+    def test_count_distinct(self):
+        """Test CountDistinct aggregation conversion."""
+        result = convert_aggregation('CountDistinct', '"CustomerID"')
+        assert result == 'COUNT(DISTINCT "CustomerID")'
 
-    # Max
-    result = converter.convert('Max([A], [B], [C])')
-    assert 'GREATEST' in result, f"Expected GREATEST, got {result}"
+    def test_avg(self):
+        """Test Avg aggregation conversion."""
+        result = convert_aggregation('Avg', '"Price"')
+        assert result == 'AVG("Price")'
 
-    print("[PASS] Min/Max function conversions work correctly")
 
+class TestConvenienceFunction:
+    """Tests for the convenience convert_alteryx_expression function."""
 
-def test_coalesce():
-    """Test Coalesce function conversion."""
-    converter = FormulaConverter()
+    def test_convenience_function(self):
+        """Test the convenience convert_alteryx_expression function."""
+        result = convert_alteryx_expression('[Field1] + [Field2]')
+        assert '"Field1"' in result and '"Field2"' in result
 
-    result = converter.convert('Coalesce([A], [B], "default")')
-    assert 'COALESCE' in result, f"Expected COALESCE, got {result}"
 
-    print("[PASS] Coalesce conversion works correctly")
-
-
-def test_complex_expression():
-    """Test conversion of complex nested expressions."""
-    converter = FormulaConverter()
-
-    # Complex expression with multiple functions
-    expr = 'IIF(IsNull([Amount]), 0, Round([Amount] * 1.1, 2))'
-    result = converter.convert(expr)
-
-    assert 'CASE WHEN' in result, f"Expected CASE WHEN, got {result}"
-    assert 'IS NULL' in result, f"Expected IS NULL, got {result}"
-    assert 'ROUND' in result, f"Expected ROUND, got {result}"
-
-    print("[PASS] Complex expression conversion works correctly")
-
-
-def test_aggregation_conversion():
-    """Test aggregation function conversions."""
-    # Sum
-    result = convert_aggregation('Sum', '"Amount"')
-    assert 'SUM("Amount")' == result, f"Expected SUM, got {result}"
-
-    # Count
-    result = convert_aggregation('Count', '"ID"')
-    assert 'COUNT("ID")' == result, f"Expected COUNT, got {result}"
-
-    # CountDistinct
-    result = convert_aggregation('CountDistinct', '"CustomerID"')
-    assert 'COUNT(DISTINCT "CustomerID")' == result, f"Expected COUNT DISTINCT, got {result}"
-
-    # Avg
-    result = convert_aggregation('Avg', '"Price"')
-    assert 'AVG("Price")' == result, f"Expected AVG, got {result}"
-
-    print("[PASS] Aggregation conversions work correctly")
-
-
-def test_convenience_function():
-    """Test the convenience convert_alteryx_expression function."""
-    result = convert_alteryx_expression('[Field1] + [Field2]')
-    assert '"Field1"' in result and '"Field2"' in result, f"Got {result}"
-
-    print("[PASS] Convenience function works correctly")
-
-
-def run_all_tests():
-    """Run all tests."""
-    print("Testing Alteryx formula converter...\n")
-
-    test_field_references()
-    test_operator_conversion()
-    test_iif_conversion()
-    test_isnull_conversion()
-    test_isempty_conversion()
-    test_string_functions()
-    test_math_functions()
-    test_date_functions()
-    test_conversion_functions()
-    test_min_max_functions()
-    test_coalesce()
-    test_complex_expression()
-    test_aggregation_conversion()
-    test_convenience_function()
-
-    print("\n" + "=" * 50)
-    print("All formula converter tests passed!")
-    print("=" * 50)
-
-
+# Backwards compatibility: allow running directly
 if __name__ == '__main__':
-    run_all_tests()
+    pytest.main([__file__, '-v'])

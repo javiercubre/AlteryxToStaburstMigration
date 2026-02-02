@@ -8,6 +8,13 @@
 # - pathlib for path handling
 # - dataclasses for data models
 
-# Optional dependencies for enhanced functionality:
-# lxml>=4.9.0        # Faster/more robust XML parsing (optional)
-# networkx>=3.0      # Advanced graph analysis (future enhancement)
+# ============================================================
+# OPTIONAL DEPENDENCIES
+# ============================================================
+# Install for enhanced functionality using:
+#   pip install -r requirements-optional.txt
+
+# See requirements-optional.txt for:
+# - Excel file support (.xlsx/.xls)
+# - Parquet file support
+# - Faster XML parsing

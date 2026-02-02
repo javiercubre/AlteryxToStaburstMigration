@@ -1,13 +1,19 @@
 """
 Macro handler with interactive prompts for missing macros.
+
+MED-02 fix: Added comprehensive type hints.
+LOW-04 fix: Replaced print() with logging module.
 """
-import os
 from pathlib import Path
-from typing import Optional, List, Dict, Set
+from typing import Optional, List, Dict, Set, Any, Union
 from dataclasses import dataclass, field
 
 from models import AlteryxWorkflow, MacroInfo
 from alteryx_parser import AlteryxParser
+from logging_config import get_logger
+
+# Module logger
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -39,9 +45,9 @@ class MacroResolver:
         if path.exists() and path.is_dir():
             if path not in self.search_directories:
                 self.search_directories.append(path)
-                print(f"Added macro search directory: {path}")
+                logger.info(f"Added macro search directory: {path}")
         else:
-            print(f"Warning: Directory does not exist: {directory}")
+            logger.warning(f"Directory does not exist: {directory}")
 
     def resolve_macros(self, workflow: AlteryxWorkflow) -> Dict[str, MacroInfo]:
         """Resolve all macros in a workflow."""
@@ -142,21 +148,33 @@ class MacroResolver:
 
     def _prompt_for_macro(self, macro_ref: str, workflow: AlteryxWorkflow,
                           macro_info: MacroInfo) -> MacroInfo:
-        """Interactively prompt user for macro location."""
+        """Interactively prompt user for macro location.
+
+        MED-05 fix: Better TTY detection for non-interactive environments.
+        """
+        import sys
+
         macro_name = Path(macro_ref).name
 
-        print("\n" + "=" * 60)
-        print(f"Macro not found: \"{macro_name}\"")
-        print(f"Referenced in: {workflow.metadata.name}")
+        # Check if we can actually interact with the user
+        if not sys.stdin.isatty():
+            logger.info(f"Non-interactive environment detected. Cannot prompt for macro: {macro_name}")
+            logger.info(f"  Use --macro-dir to specify directories containing macros")
+            self.skip_macros.add(macro_ref)
+            return macro_info
+
+        logger.info("\n" + "=" * 60)
+        logger.info(f"Macro not found: \"{macro_name}\"")
+        logger.info(f"Referenced in: {workflow.metadata.name}")
         if macro_ref != macro_name:
-            print(f"Original path: {macro_ref}")
-        print("=" * 60)
-        print("\nOptions:")
-        print("[1] Enter path to macro file")
-        print("[2] Enter directory containing macros")
-        print("[3] Skip this macro (document as missing)")
-        print("[4] Skip all missing macros")
-        print()
+            logger.info(f"Original path: {macro_ref}")
+        logger.info("=" * 60)
+        logger.info("\nOptions:")
+        logger.info("[1] Enter path to macro file")
+        logger.info("[2] Enter directory containing macros")
+        logger.info("[3] Skip this macro (document as missing)")
+        logger.info("[4] Skip all missing macros")
+        logger.info("")
 
         while True:
             try:
@@ -173,10 +191,10 @@ class MacroResolver:
 
                         # Parse the macro
                         macro_info.workflow = self._parse_macro(path)
-                        print(f"Macro resolved: {path}")
+                        logger.info(f"Macro resolved: {path}")
                         return macro_info
                     else:
-                        print(f"File not found: {path}")
+                        logger.warning(f"File not found: {path}")
                         continue
 
                 elif choice == "2":
@@ -193,33 +211,33 @@ class MacroResolver:
                             macro_info.resolved_path = str(resolved)
                             self.resolved_paths[macro_ref] = str(resolved)
                             macro_info.workflow = self._parse_macro(str(resolved))
-                            print(f"Macro found: {resolved}")
+                            logger.info(f"Macro found: {resolved}")
                             return macro_info
                         else:
-                            print(f"Macro not found in {directory}")
-                            print("Directory added to search paths for future lookups.")
+                            logger.info(f"Macro not found in {directory}")
+                            logger.info("Directory added to search paths for future lookups.")
                             # Continue the prompt loop
                             continue
                     else:
-                        print(f"Invalid directory: {directory}")
+                        logger.warning(f"Invalid directory: {directory}")
                         continue
 
                 elif choice == "3":
                     self.skip_macros.add(macro_ref)
-                    print(f"Skipping macro: {macro_name}")
+                    logger.info(f"Skipping macro: {macro_name}")
                     return macro_info
 
                 elif choice == "4":
                     self.skip_all = True
                     self.skip_macros.add(macro_ref)
-                    print("Skipping all missing macros")
+                    logger.info("Skipping all missing macros")
                     return macro_info
 
                 else:
-                    print("Invalid choice. Please enter 1, 2, 3, or 4.")
+                    logger.warning("Invalid choice. Please enter 1, 2, 3, or 4.")
 
             except KeyboardInterrupt:
-                print("\nSkipping macro resolution")
+                logger.info("\nSkipping macro resolution")
                 return macro_info
             except EOFError:
                 # Non-interactive environment
@@ -232,7 +250,7 @@ class MacroResolver:
             parser = AlteryxParser()
             return parser.parse(file_path)
         except Exception as e:
-            print(f"Warning: Could not parse macro {file_path}: {e}")
+            logger.warning(f"Could not parse macro {file_path}: {e}")
             return None
 
 
@@ -265,8 +283,12 @@ class MacroInventory:
         """Get macros that were not found."""
         return [m for m in self.macros.values() if not m.found]
 
-    def get_summary(self) -> Dict:
-        """Get a summary of macro usage."""
+    def get_summary(self) -> Dict[str, Any]:
+        """Get a summary of macro usage.
+
+        Returns:
+            Dict with keys: total_macros, found, missing, shared, usage
+        """
         return {
             "total_macros": len(self.macros),
             "found": sum(1 for m in self.macros.values() if m.found),

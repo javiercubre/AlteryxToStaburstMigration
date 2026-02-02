@@ -3,10 +3,11 @@ Documentation generator for Alteryx to Starburst/Trino migration.
 Generates Markdown documentation with Mermaid diagrams.
 
 Target Platform: Starburst (Trino-based)
+
+LOW-04 fix: Replaced print() with logging module.
 """
-import os
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any, Set, Tuple
 from datetime import datetime
 
 from models import (
@@ -14,6 +15,10 @@ from models import (
 )
 from transformation_analyzer import TransformationAnalyzer
 from macro_handler import MacroInventory
+from logging_config import get_logger
+
+# Module logger
+logger = get_logger(__name__)
 
 
 class DocumentationGenerator:
@@ -28,7 +33,7 @@ class DocumentationGenerator:
 
     def generate_all(self, workflows: List[AlteryxWorkflow],
                      macro_inventory: Optional[MacroInventory] = None,
-                     dbt_todos: Optional[List] = None) -> None:
+                     dbt_todos: Optional[List[Any]] = None) -> None:
         """Generate all documentation for a list of workflows.
 
         Args:
@@ -60,11 +65,11 @@ class DocumentationGenerator:
         if dbt_todos:
             self._generate_todo_guide(dbt_todos)
 
-        print(f"Documentation generated at: {self.output_dir}")
+        logger.info(f"Documentation generated at: {self.output_dir}")
 
     def _generate_index(self, workflows: List[AlteryxWorkflow],
                         macro_inventory: Optional[MacroInventory],
-                        dbt_todos: Optional[List] = None) -> None:
+                        dbt_todos: Optional[List[Any]] = None) -> None:
         """Generate the main index.md file."""
         content = [
             "# Alteryx to Starburst Migration Documentation",
@@ -404,7 +409,7 @@ class DocumentationGenerator:
         ]
 
         # Collect all sources
-        sources_map: Dict[str, List[str]] = {}
+        sources_map: Dict[str, Dict[str, Any]] = {}
 
         for wf in workflows:
             analyzer = TransformationAnalyzer(wf)
@@ -726,7 +731,7 @@ class DocumentationGenerator:
 
         return sanitized or "unknown"
 
-    def _generate_todo_guide(self, todos: List) -> None:
+    def _generate_todo_guide(self, todos: List[Any]) -> None:
         """Generate todo_guide.md with all TODO items from DBT scaffold."""
         content = [
             "# Developer TODO Guide",

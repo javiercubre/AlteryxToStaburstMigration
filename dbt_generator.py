@@ -4,6 +4,8 @@ Generates starter DBT models based on Alteryx workflow analysis.
 
 Target Platform: Starburst (Trino-based)
 SQL Dialect: Trino SQL
+
+LOW-04 fix: Replaced logger.info("") with logging module.
 """
 import os
 import re
@@ -21,6 +23,15 @@ from transformation_analyzer import TransformationAnalyzer
 from tool_mappings import get_dbt_prefix, AGGREGATION_MAP
 from quality_validator import QualityValidator, create_validation_seed_template
 from formula_converter import FormulaConverter, convert_aggregation
+from logging_config import get_logger
+from column_detector import ColumnDetector
+
+# Module logger
+logger = get_logger(__name__)
+
+# Configuration constants
+MAX_COLUMN_TRACING_ITERATIONS = 50  # Prevent infinite loops in column lineage tracing
+DEFAULT_SCHEMA_NAME = "raw"  # Default schema for sources without explicit schema
 
 
 @dataclass
@@ -59,11 +70,13 @@ class DBTGenerator:
     """Generates DBT project structure from Alteryx workflows."""
 
     def __init__(self, output_dir: str, project_name: str = "alteryx_migration",
-                 interactive: bool = True, generate_validation: bool = True):
+                 interactive: bool = True, generate_validation: bool = True,
+                 default_schema: str = DEFAULT_SCHEMA_NAME):
         self.output_dir = Path(output_dir)
         self.project_name = project_name
         self.interactive = interactive  # Whether to prompt user for missing info
         self.generate_validation = generate_validation  # Generate validation tests
+        self.default_schema = default_schema  # Default schema name for sources
         self.sources: Dict[str, Dict[str, SourceInfo]] = {}  # schema -> {table -> SourceInfo}
         self.models_info: Dict[str, ModelInfo] = {}  # model_name -> ModelInfo
         self.models_generated: List[str] = []
@@ -77,6 +90,19 @@ class DBTGenerator:
         self._current_model_name: str = ""  # Track current model being generated
         self._current_layer: str = ""  # Track current layer
         self._formula_converter = FormulaConverter()  # Alteryx to Trino formula converter
+        # MED-01: Use ColumnDetector for file-based column reading
+        self._column_detector = ColumnDetector(
+            on_missing_dependency=self._handle_missing_column_dependency
+        )
+
+    def _handle_missing_column_dependency(self, dependency: str, context: str) -> None:
+        """Handle missing dependencies reported by ColumnDetector."""
+        self._add_todo(
+            todo_type="missing_dependency",
+            description=f"Install {dependency} to auto-detect columns from: {context}",
+            context=f"Run: pip install {dependency}",
+            priority="high"
+        )
 
     def generate(self, workflows: List[AlteryxWorkflow], macro_inventory=None) -> None:
         """Generate complete DBT project from workflows.
@@ -91,6 +117,8 @@ class DBTGenerator:
         # Generate reusable macros from Alteryx macros
         if macro_inventory:
             self._generate_macros(macro_inventory)
+            # MED-06 fix: Surface missing macros in TODO list
+            self._add_missing_macro_todos(macro_inventory)
 
         # Collect all sources with column info
         self._collect_sources(workflows)
@@ -115,23 +143,71 @@ class DBTGenerator:
         # Generate dbt_project.yml
         self._generate_project_yml()
 
-        print(f"DBT project generated at: {self.output_dir}")
-        print(f"Models generated: {len(self.models_generated)}")
+        logger.info(f"DBT project generated at: {self.output_dir}")
+        logger.info(f"Models generated: {len(self.models_generated)}")
         if self.macros_generated:
-            print(f"Macros generated: {len(self.macros_generated)}")
+            logger.info(f"Macros generated: {len(self.macros_generated)}")
         if self.validation_tests_generated:
-            print(f"Validation tests generated: {len(self.validation_tests_generated)}")
+            logger.info(f"Validation tests generated: {len(self.validation_tests_generated)}")
         if self.todos:
-            print(f"TODOs requiring attention: {len(self.todos)}")
+            logger.info(f"TODOs requiring attention: {len(self.todos)}")
+
+    def _calculate_todo_priority(self, todo_type: str, layer: str) -> str:
+        """Calculate TODO priority based on type and context.
+
+        MED-08 fix: Implement dynamic TODO priority scoring.
+
+        Priority rules:
+        - High: Missing dependencies, syntax errors, output layer issues
+        - Medium: Transformations, intermediate layer, expression reviews
+        - Low: Documentation, styling, bronze layer column additions
+        """
+        # High priority: Critical issues that may cause errors
+        high_priority_types = {
+            "missing_dependency", "missing_macro", "syntax_error",
+            "parquet_read_error", "implement_transformation"
+        }
+        if todo_type in high_priority_types:
+            return "high"
+
+        # High priority: Gold layer (output) issues
+        if layer == "gold" and todo_type in {"specify_columns", "implement_transformation"}:
+            return "high"
+
+        # Low priority: Documentation and styling
+        low_priority_types = {
+            "add_order_by", "add_description", "review_naming"
+        }
+        if todo_type in low_priority_types:
+            return "low"
+
+        # Low priority: Bronze layer column specification (often auto-detected)
+        if layer == "bronze" and todo_type == "specify_columns":
+            return "low"
+
+        # Default: Medium priority
+        return "medium"
 
     def _add_todo(self, todo_type: str, description: str, context: str = "",
-                  priority: str = "medium") -> None:
-        """Track a TODO item that was generated in the scaffold."""
+                  priority: str = None) -> None:
+        """Track a TODO item that was generated in the scaffold.
+
+        Args:
+            todo_type: Type of TODO (e.g., 'specify_columns', 'implement_transformation')
+            description: Human-readable description
+            context: Additional context
+            priority: Optional explicit priority ('high', 'medium', 'low').
+                     If None, priority is calculated automatically.
+        """
         file_path = ""
         if self._current_layer and self._current_model_name:
             file_path = f"models/{self._current_layer}/{self._current_model_name}.sql"
         elif self._current_model_name:
             file_path = f"macros/{self._current_model_name}.sql"
+
+        # MED-08 fix: Calculate priority if not explicitly provided
+        if priority is None:
+            priority = self._calculate_todo_priority(todo_type, self._current_layer or "unknown")
 
         self.todos.append(TodoItem(
             file_path=file_path,
@@ -144,7 +220,16 @@ class DBTGenerator:
         ))
 
     def get_todos_summary(self) -> Dict:
-        """Get a summary of all TODOs for documentation."""
+        """Get a summary of all TODOs for documentation.
+
+        Returns:
+            Dict with keys:
+                - total: total number of TODO items
+                - by_priority: count of TODOs by priority (high, medium, low)
+                - by_layer: count of TODOs by medallion layer
+                - by_type: count of TODOs by type
+                - items: list of all TodoItem objects
+        """
         summary = {
             "total": len(self.todos),
             "by_priority": {"high": 0, "medium": 0, "low": 0},
@@ -159,6 +244,28 @@ class DBTGenerator:
             summary["by_type"][todo.todo_type] = summary["by_type"].get(todo.todo_type, 0) + 1
 
         return summary
+
+    def _add_missing_macro_todos(self, macro_inventory) -> None:
+        """Add TODO items for macros that could not be found.
+
+        MED-06 fix: Surface missing macros from MacroInventory in TODO list.
+        """
+        missing_macros = macro_inventory.get_missing_macros()
+        for macro_info in missing_macros:
+            workflows_using = macro_inventory.usage.get(macro_info.name, [])
+            workflows_str = ", ".join(workflows_using[:3])
+            if len(workflows_using) > 3:
+                workflows_str += f" (+{len(workflows_using) - 3} more)"
+
+            self.todos.append(TodoItem(
+                file_path=f"macros/{macro_info.name}.sql (missing)",
+                model_name=macro_info.name,
+                layer="macro",
+                todo_type="missing_macro",
+                description=f"Locate or recreate missing macro: {macro_info.name}",
+                context=f"Original path: {macro_info.file_path}, Used by: {workflows_str}",
+                priority="high",
+            ))
 
     def validate_sql(self) -> Dict:
         """Validate generated SQL by attempting to compile with dbt.
@@ -285,7 +392,7 @@ class DBTGenerator:
             shutil.copy2(macro_file, target_file)
 
         if macro_files:
-            print(f"Copied {len(macro_files)} reusable migration macros")
+            logger.info(f"Copied {len(macro_files)} reusable migration macros")
 
             # Generate an index file documenting the migration macros
             self._generate_migration_macros_index(macro_files)
@@ -663,22 +770,38 @@ class DBTGenerator:
         return columns
 
     def _prompt_for_source_file(self, node: AlteryxNode, schema: str, table: str) -> List[str]:
-        """Prompt user for source file location to read column metadata."""
+        """Prompt user for source file location to read column metadata.
+
+        MED-05 fix: Better TTY detection for non-interactive environments.
+        """
+        import sys
+
         source_key = f"{schema}.{table}"
         source_display = node.source_path or node.table_name or table
 
-        print("\n" + "=" * 60)
-        print(f"Unknown columns for source: {source_display}")
-        print(f"Schema: {schema}, Table: {table}")
+        # Check if we can actually interact with the user
+        if not sys.stdin.isatty():
+            logger.info(f"Non-interactive environment detected. Skipping column prompt for {source_display}")
+            self._add_todo(
+                todo_type="specify_columns",
+                description=f"Specify columns for source: {source_display}",
+                context=f"Run with --non-interactive=false in an interactive terminal to provide columns",
+                priority="medium"
+            )
+            return []
+
+        logger.info("\n" + "=" * 60)
+        logger.info(f"Unknown columns for source: {source_display}")
+        logger.info(f"Schema: {schema}, Table: {table}")
         if node.annotation:
-            print(f"Description: {node.annotation}")
-        print("=" * 60)
-        print("\nTo generate accurate DBT models, column information is needed.")
-        print("Options:")
-        print("[1] Enter path to raw data file (CSV, Excel, JSON, Parquet)")
-        print("[2] Enter columns manually (comma-separated)")
-        print("[3] Skip (will use SELECT * with TODO comment)")
-        print()
+            logger.info(f"Description: {node.annotation}")
+        logger.info("=" * 60)
+        logger.info("\nTo generate accurate DBT models, column information is needed.")
+        logger.info("Options:")
+        logger.info("[1] Enter path to raw data file (CSV, Excel, JSON, Parquet)")
+        logger.info("[2] Enter columns manually (comma-separated)")
+        logger.info("[3] Skip (will use SELECT * with TODO comment)")
+        logger.info("")
 
         while True:
             try:
@@ -692,14 +815,14 @@ class DBTGenerator:
                         columns = self._read_file_columns(file_path)
                         if columns:
                             self._resolved_source_files[source_key] = file_path
-                            print(f"Found {len(columns)} columns: {', '.join(columns[:5])}{'...' if len(columns) > 5 else ''}")
+                            logger.info(f"Found {len(columns)} columns: {', '.join(columns[:5])}{'...' if len(columns) > 5 else ''}")
                             return columns
                         else:
-                            print(f"Could not read columns from: {file_path}")
-                            print("Supported formats: CSV, Excel (.xlsx/.xls), JSON, Parquet")
+                            logger.warning(f"Could not read columns from: {file_path}")
+                            logger.info("Supported formats: CSV, Excel (.xlsx/.xls), JSON, Parquet")
                             continue
                     else:
-                        print(f"File not found: {file_path}")
+                        logger.warning(f"File not found: {file_path}")
                         continue
 
                 elif choice == "2":
@@ -707,21 +830,21 @@ class DBTGenerator:
                     if cols_input:
                         columns = [c.strip() for c in cols_input.split(',') if c.strip()]
                         if columns:
-                            print(f"Using {len(columns)} columns: {', '.join(columns[:5])}{'...' if len(columns) > 5 else ''}")
+                            logger.info(f"Using {len(columns)} columns: {', '.join(columns[:5])}{'...' if len(columns) > 5 else ''}")
                             return columns
-                    print("No valid columns entered. Please try again.")
+                    logger.warning("No valid columns entered. Please try again.")
                     continue
 
                 elif choice == "3":
-                    print(f"Skipping column detection for {table}")
+                    logger.info(f"Skipping column detection for {table}")
                     self._resolved_source_files[source_key] = ""  # Mark as skipped
                     return []
 
                 else:
-                    print("Invalid choice. Please enter 1, 2, or 3.")
+                    logger.warning("Invalid choice. Please enter 1, 2, or 3.")
 
             except KeyboardInterrupt:
-                print("\nSkipping column detection")
+                logger.info("\nSkipping column detection")
                 return []
             except EOFError:
                 # Non-interactive environment
@@ -730,147 +853,39 @@ class DBTGenerator:
     def _read_file_columns(self, file_path: str) -> List[str]:
         """Read column names from a data file.
 
+        MED-01: Delegates to ColumnDetector module.
         Supports: CSV, Excel (.xlsx/.xls), JSON, Parquet
         """
-        path = Path(file_path)
-        if not path.exists():
-            return []
-
-        suffix = path.suffix.lower()
-        columns = []
-
-        try:
-            if suffix == '.csv':
-                columns = self._read_csv_columns(file_path)
-            elif suffix in ['.xlsx', '.xls']:
-                columns = self._read_excel_columns(file_path)
-            elif suffix == '.json':
-                columns = self._read_json_columns(file_path)
-            elif suffix == '.parquet':
-                columns = self._read_parquet_columns(file_path)
-            elif suffix in ['.txt', '.tsv']:
-                # Try as tab-separated or delimited file
-                columns = self._read_csv_columns(file_path, delimiter='\t')
-        except Exception as e:
-            print(f"Warning: Could not read {file_path}: {e}")
-
-        return columns
+        return self._column_detector.read_file_columns(file_path)
 
     def _read_csv_columns(self, file_path: str, delimiter: str = ',') -> List[str]:
-        """Read column headers from a CSV file."""
-        columns = []
-        try:
-            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-                # Try to detect delimiter if comma doesn't work well
-                sample = f.read(4096)
-                f.seek(0)
+        """Read column headers from a CSV file.
 
-                try:
-                    dialect = csv.Sniffer().sniff(sample, delimiters=',;\t|')
-                    delimiter = dialect.delimiter
-                except csv.Error:
-                    pass  # Use default delimiter
-
-                reader = csv.reader(f, delimiter=delimiter)
-                header_row = next(reader, None)
-                if header_row:
-                    columns = [col.strip() for col in header_row if col.strip()]
-        except Exception as e:
-            print(f"Warning: Error reading CSV {file_path}: {e}")
-
-        return columns
+        MED-01: Delegates to ColumnDetector module.
+        """
+        return self._column_detector.read_csv_columns(file_path, delimiter)
 
     def _read_excel_columns(self, file_path: str) -> List[str]:
-        """Read column headers from an Excel file."""
-        columns = []
-        try:
-            # Try openpyxl for .xlsx
-            import openpyxl
-            wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
-            ws = wb.active
-            if ws:
-                first_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
-                if first_row:
-                    columns = [str(cell).strip() for cell in first_row if cell is not None]
-            wb.close()
-        except ImportError:
-            print("Note: Install openpyxl for Excel support: pip install openpyxl")
-        except Exception as e:
-            # Try xlrd for .xls
-            try:
-                import xlrd
-                wb = xlrd.open_workbook(file_path)
-                ws = wb.sheet_by_index(0)
-                if ws.nrows > 0:
-                    columns = [str(cell.value).strip() for cell in ws.row(0) if cell.value]
-            except ImportError:
-                print("Note: Install xlrd for .xls support: pip install xlrd")
-            except Exception as e2:
-                print(f"Warning: Error reading Excel {file_path}: {e2}")
+        """Read column headers from an Excel file.
 
-        return columns
+        MED-01: Delegates to ColumnDetector module.
+        """
+        return self._column_detector.read_excel_columns(file_path)
 
     def _read_json_columns(self, file_path: str) -> List[str]:
-        """Read column/field names from a JSON file."""
-        columns = []
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+        """Read column/field names from a JSON file.
 
-            # Handle different JSON structures
-            if isinstance(data, list) and len(data) > 0:
-                # Array of objects - get keys from first object
-                if isinstance(data[0], dict):
-                    columns = list(data[0].keys())
-            elif isinstance(data, dict):
-                # Single object or nested structure
-                if all(isinstance(v, (str, int, float, bool, type(None))) for v in data.values()):
-                    # Flat object
-                    columns = list(data.keys())
-                elif 'data' in data and isinstance(data['data'], list):
-                    # Common pattern: {"data": [...]}
-                    if len(data['data']) > 0 and isinstance(data['data'][0], dict):
-                        columns = list(data['data'][0].keys())
-                elif 'records' in data and isinstance(data['records'], list):
-                    # Common pattern: {"records": [...]}
-                    if len(data['records']) > 0 and isinstance(data['records'][0], dict):
-                        columns = list(data['records'][0].keys())
-        except Exception as e:
-            print(f"Warning: Error reading JSON {file_path}: {e}")
-
-        return columns
+        MED-01: Delegates to ColumnDetector module.
+        """
+        return self._column_detector.read_json_columns(file_path)
 
     def _read_parquet_columns(self, file_path: str) -> List[str]:
         """Read column names from a Parquet file.
 
+        MED-01: Delegates to ColumnDetector module.
         MED-09 fix: Improved error handling - adds TODO when pyarrow missing.
         """
-        columns = []
-        try:
-            import pyarrow.parquet as pq
-            parquet_file = pq.ParquetFile(file_path)
-            columns = parquet_file.schema.names
-        except ImportError:
-            # MED-09 fix: Track missing dependency as a TODO and warn prominently
-            print(f"WARNING: Cannot read Parquet columns from {file_path}")
-            print("         pyarrow is not installed. Install with: pip install pyarrow")
-            print("         Columns will need to be specified manually in generated models.")
-            self._add_todo(
-                todo_type="missing_dependency",
-                description=f"Install pyarrow to auto-detect columns from Parquet file: {file_path}",
-                context="Run: pip install pyarrow",
-                priority="high"
-            )
-        except Exception as e:
-            print(f"WARNING: Error reading Parquet {file_path}: {e}")
-            self._add_todo(
-                todo_type="parquet_read_error",
-                description=f"Could not read Parquet file: {file_path}",
-                context=str(e),
-                priority="medium"
-            )
-
-        return columns
+        return self._column_detector.read_parquet_columns(file_path)
 
     def _extract_columns_from_node(self, node: AlteryxNode) -> List[str]:
         """Extract column names from a node's configuration."""
@@ -1012,7 +1027,7 @@ class DBTGenerator:
         # Detect circular dependency - if we're already visiting this node,
         # we have a cycle. Return empty to break the recursion.
         if node.tool_id in _visiting:
-            print(f"Warning: Circular dependency detected at tool #{node.tool_id} ({node.plugin_name})")
+            logger.warning(f"Circular dependency detected at tool #{node.tool_id} ({node.plugin_name})")
             return []
 
         # Mark this node as being visited
@@ -1119,7 +1134,7 @@ class DBTGenerator:
                 if match:
                     return self._sanitize_name(match.group(1))
 
-        return "raw"
+        return self.default_schema
 
     def _get_table_name(self, node: AlteryxNode) -> str:
         """Determine table name from source node - prioritize meaningful names."""
@@ -1274,10 +1289,46 @@ class DBTGenerator:
         return expanded
 
     def _quote_column(self, col: str) -> str:
-        """Wrap column name in double quotes for Trino compatibility."""
-        # Don't quote if already quoted or if it's a *
-        if col.startswith('"') or col == '*':
+        """Wrap column name in double quotes for Trino compatibility.
+
+        LOW-01 fix: Improved column quoting for consistency.
+
+        Args:
+            col: Column name or expression to quote
+
+        Returns:
+            Quoted column name. Returns unmodified if:
+            - Already quoted
+            - Is a * wildcard
+            - Is an expression (contains operators or parentheses)
+            - Is a numeric literal
+        """
+        if not col or not isinstance(col, str):
             return col
+
+        col = col.strip()
+
+        # Don't quote if already quoted
+        if col.startswith('"') and col.endswith('"'):
+            return col
+
+        # Don't quote wildcards
+        if col == '*':
+            return col
+
+        # Don't quote expressions (contain operators, parentheses, or spaces with operators)
+        expression_indicators = ['(', ')', '+', '-', '*', '/', '||', ' as ', ' AS ', '=', '<', '>']
+        if any(ind in col for ind in expression_indicators):
+            return col
+
+        # Don't quote numeric literals
+        if col.replace('.', '').replace('-', '').isdigit():
+            return col
+
+        # Don't quote NULL
+        if col.upper() == 'NULL':
+            return col
+
         return f'"{col}"'
 
     def _generate_sources_yml(self) -> None:
@@ -2625,7 +2676,7 @@ from final"""
         result = expr
 
         # Process IIF functions from innermost to outermost
-        max_iterations = 50  # Prevent infinite loops
+        max_iterations = MAX_COLUMN_TRACING_ITERATIONS  # Prevent infinite loops
         iteration = 0
 
         while iteration < max_iterations:
@@ -2672,7 +2723,7 @@ from final"""
     def _convert_isnull(self, expr: str) -> str:
         """Convert IsNull(field) to (field IS NULL)."""
         result = expr
-        max_iterations = 50
+        max_iterations = MAX_COLUMN_TRACING_ITERATIONS
         iteration = 0
 
         while iteration < max_iterations:
@@ -2698,7 +2749,7 @@ from final"""
     def _convert_isempty(self, expr: str) -> str:
         """Convert IsEmpty(field) to (field = '')."""
         result = expr
-        max_iterations = 50
+        max_iterations = MAX_COLUMN_TRACING_ITERATIONS
         iteration = 0
 
         while iteration < max_iterations:

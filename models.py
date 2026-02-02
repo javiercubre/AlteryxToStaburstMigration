@@ -54,6 +54,12 @@ class AlteryxNode:
     connection_string: Optional[str] = None # Database connection
     table_name: Optional[str] = None        # Database table
     sql_query: Optional[str] = None         # SQL query if present
+
+    # Parsed connection string components (MED-10 fix)
+    db_server: Optional[str] = None         # Server/host name
+    db_database: Optional[str] = None       # Database name
+    db_schema: Optional[str] = None         # Schema name
+    db_auth_type: Optional[str] = None      # Authentication type (e.g., 'SQL', 'Windows', 'OAuth')
     expression: Optional[str] = None        # Formula/filter expression
     join_keys: List[str] = field(default_factory=list)
     join_type: Optional[str] = None

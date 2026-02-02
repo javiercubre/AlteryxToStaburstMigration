@@ -11,7 +11,6 @@ from models import (
     AlteryxNode, AlteryxConnection, AlteryxWorkflow, WorkflowMetadata,
     ToolCategory
 )
-from typing import TYPE_CHECKING
 from tool_mappings import get_category_from_plugin, get_simple_name
 
 
@@ -319,6 +318,74 @@ class AlteryxParser:
 
         return config
 
+    def _parse_connection_string(self, conn_string: str, node: AlteryxNode, config: Dict) -> None:
+        """Parse connection string to extract server, database, schema, and auth type.
+
+        MED-10 fix: Parse connection strings to extract meaningful info for DBT source mapping.
+
+        Supports common formats:
+        - ODBC: Driver={...};Server=...;Database=...;
+        - SQL Server: Data Source=...;Initial Catalog=...;
+        - Generic: Host=...;Port=...;Database=...;
+        """
+        if not conn_string:
+            return
+
+        conn_lower = conn_string.lower()
+        parsed = {}
+
+        # Extract server/host
+        server_patterns = [
+            r'server\s*=\s*([^;]+)',
+            r'data\s+source\s*=\s*([^;]+)',
+            r'host\s*=\s*([^;]+)',
+            r'hostname\s*=\s*([^;]+)',
+        ]
+        for pattern in server_patterns:
+            match = re.search(pattern, conn_lower)
+            if match:
+                node.db_server = match.group(1).strip()
+                parsed['server'] = node.db_server
+                break
+
+        # Extract database
+        db_patterns = [
+            r'database\s*=\s*([^;]+)',
+            r'initial\s+catalog\s*=\s*([^;]+)',
+            r'dbname\s*=\s*([^;]+)',
+        ]
+        for pattern in db_patterns:
+            match = re.search(pattern, conn_lower)
+            if match:
+                node.db_database = match.group(1).strip()
+                parsed['database'] = node.db_database
+                break
+
+        # Extract schema (if present)
+        schema_patterns = [
+            r'schema\s*=\s*([^;]+)',
+            r'default_schema\s*=\s*([^;]+)',
+        ]
+        for pattern in schema_patterns:
+            match = re.search(pattern, conn_lower)
+            if match:
+                node.db_schema = match.group(1).strip()
+                parsed['schema'] = node.db_schema
+                break
+
+        # Determine authentication type
+        if 'integrated security' in conn_lower or 'trusted_connection' in conn_lower:
+            node.db_auth_type = 'Windows'
+        elif 'password' in conn_lower and 'user' in conn_lower:
+            node.db_auth_type = 'SQL'
+        elif 'oauth' in conn_lower or 'token' in conn_lower:
+            node.db_auth_type = 'OAuth'
+        else:
+            node.db_auth_type = 'Unknown'
+        parsed['auth_type'] = node.db_auth_type
+
+        config['parsed_connection'] = parsed
+
     def _parse_input_config(self, config_elem: ET.Element, node: AlteryxNode, config: Dict):
         """Parse input tool configuration."""
         # File path
@@ -332,6 +399,8 @@ class AlteryxParser:
         if conn_elem is not None:
             node.connection_string = conn_elem.text
             config['connection'] = node.connection_string
+            # MED-10 fix: Parse connection string
+            self._parse_connection_string(node.connection_string, node, config)
 
         # Table name
         table_elem = config_elem.find('.//Table')
@@ -363,6 +432,9 @@ class AlteryxParser:
         conn_elem = config_elem.find('.//Connection')
         if conn_elem is not None:
             node.connection_string = conn_elem.text
+            config['connection'] = node.connection_string
+            # MED-10 fix: Parse connection string
+            self._parse_connection_string(node.connection_string, node, config)
             config['connection'] = node.connection_string
 
         # Table name

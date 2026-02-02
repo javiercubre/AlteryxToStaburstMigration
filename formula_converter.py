@@ -10,6 +10,9 @@ SQL Dialect: Trino SQL
 import re
 from typing import Dict, Tuple, Optional, Callable
 
+# Configuration constants
+MAX_FUNCTION_CONVERSION_ITERATIONS = 100  # Prevent infinite loops in nested function conversion
+
 
 # Alteryx function to Trino SQL mapping
 # Format: 'AlteryxFunction': ('TrinoEquivalent', arg_count or -1 for variable)
@@ -274,7 +277,7 @@ class FormulaConverter:
         converted_positions = set()  # Track positions we've already converted
 
         # Process functions from innermost to outermost
-        max_iterations = 100
+        max_iterations = MAX_FUNCTION_CONVERSION_ITERATIONS
         iteration = 0
 
         while iteration < max_iterations:

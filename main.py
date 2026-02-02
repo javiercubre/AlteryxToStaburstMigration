@@ -21,11 +21,15 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from alteryx_parser import AlteryxParser, parse_workflow
+from alteryx_parser import AlteryxParser
 from macro_handler import MacroResolver, MacroInventory
 from doc_generator import DocumentationGenerator
 from dbt_generator import DBTGenerator
 from models import AlteryxWorkflow
+from logging_config import setup_logging, get_logger
+
+# Module logger
+logger = get_logger(__name__)
 
 
 def find_workflows(path: Path, recursive: bool = False) -> List[Path]:
@@ -48,21 +52,28 @@ def find_workflows(path: Path, recursive: bool = False) -> List[Path]:
 
 def analyze(args) -> int:
     """Main analyze command."""
+    # Setup logging based on CLI arguments
+    setup_logging(
+        verbose=args.verbose,
+        quiet=args.quiet,
+        log_file=args.log_file
+    )
+
     target_path = Path(args.path).resolve()
 
     if not target_path.exists():
-        print(f"Error: Path does not exist: {target_path}")
+        logger.error(f"Path does not exist: {target_path}")
         return 1
 
     # Find workflows
-    print(f"Scanning for Alteryx workflows in: {target_path}")
+    logger.info(f"Scanning for Alteryx workflows in: {target_path}")
     workflow_files = find_workflows(target_path, args.recursive)
 
     if not workflow_files:
-        print("No Alteryx workflow files (.yxmd) found.")
+        logger.error("No Alteryx workflow files (.yxmd) found.")
         return 1
 
-    print(f"Found {len(workflow_files)} workflow file(s)")
+    logger.info(f"Found {len(workflow_files)} workflow file(s)")
 
     # Setup macro resolver
     macro_resolver = MacroResolver(
@@ -80,15 +91,15 @@ def analyze(args) -> int:
     parser = AlteryxParser()
 
     for wf_path in workflow_files:
-        print(f"\nParsing: {wf_path.name}")
+        logger.info(f"\nParsing: {wf_path.name}")
         try:
             workflow = parser.parse(str(wf_path))
             workflows.append(workflow)
 
-            print(f"  - {len(workflow.nodes)} tools")
-            print(f"  - {len(workflow.sources)} sources")
-            print(f"  - {len(workflow.targets)} targets")
-            print(f"  - {len(workflow.macros_used)} macros referenced")
+            logger.info(f"  - {len(workflow.nodes)} tools")
+            logger.info(f"  - {len(workflow.sources)} sources")
+            logger.info(f"  - {len(workflow.targets)} targets")
+            logger.debug(f"  - {len(workflow.macros_used)} macros referenced")
 
             # Resolve macros
             if workflow.macros_used:
@@ -97,16 +108,16 @@ def analyze(args) -> int:
                     macro_inventory.add_macro(macro_info, workflow.metadata.name)
 
                 if workflow.missing_macros:
-                    print(f"  - {len(workflow.missing_macros)} macros not found")
+                    logger.warning(f"  - {len(workflow.missing_macros)} macros not found")
 
         except Exception as e:
-            print(f"  Error parsing {wf_path}: {e}")
+            logger.error(f"  Error parsing {wf_path}: {e}")
             if args.verbose:
                 import traceback
-                traceback.print_exc()
+                logger.debug(traceback.format_exc())
 
     if not workflows:
-        print("\nNo workflows were successfully parsed.")
+        logger.error("\nNo workflows were successfully parsed.")
         return 1
 
     # Determine output directory
@@ -116,11 +127,12 @@ def analyze(args) -> int:
     dbt_todos = None
     if args.generate_dbt:
         dbt_dir = Path(args.generate_dbt)
-        print(f"\nGenerating DBT project to: {dbt_dir}")
+        logger.info(f"\nGenerating DBT project to: {dbt_dir}")
         # Pass interactive flag (inverse of non_interactive)
         dbt_generator = DBTGenerator(
             str(dbt_dir),
-            interactive=not args.non_interactive
+            interactive=not args.non_interactive,
+            default_schema=args.default_schema
         )
         # Pass macro_inventory for reusable macro generation
         dbt_generator.generate(workflows, macro_inventory)
@@ -129,36 +141,36 @@ def analyze(args) -> int:
 
         # Validate generated SQL if requested (HIGH-05 fix)
         if args.validate:
-            print("\nValidating generated SQL...")
+            logger.info("\nValidating generated SQL...")
             validation_result = dbt_generator.validate_sql()
             if validation_result['success']:
-                print(f"  Validation passed: {validation_result['models_validated']} models validated")
+                logger.info(f"  Validation passed: {validation_result['models_validated']} models validated")
             else:
-                print(f"  Validation failed: {validation_result['error']}")
+                logger.error(f"  Validation failed: {validation_result['error']}")
                 if args.verbose and validation_result.get('details'):
-                    print(f"  Details: {validation_result['details']}")
+                    logger.debug(f"  Details: {validation_result['details']}")
 
     # Generate documentation (including TODO guide if DBT was generated)
-    print(f"\nGenerating documentation to: {output_dir}")
+    logger.info(f"\nGenerating documentation to: {output_dir}")
     doc_generator = DocumentationGenerator(str(output_dir))
     doc_generator.generate_all(workflows, macro_inventory, dbt_todos)
 
     # Summary
-    print("\n" + "=" * 60)
-    print("SUMMARY")
-    print("=" * 60)
-    print(f"Workflows analyzed: {len(workflows)}")
-    print(f"Total tools: {sum(len(w.nodes) for w in workflows)}")
-    print(f"Total sources: {sum(len(w.sources) for w in workflows)}")
-    print(f"Total outputs: {sum(len(w.targets) for w in workflows)}")
+    logger.info("\n" + "=" * 60)
+    logger.info("SUMMARY")
+    logger.info("=" * 60)
+    logger.info(f"Workflows analyzed: {len(workflows)}")
+    logger.info(f"Total tools: {sum(len(w.nodes) for w in workflows)}")
+    logger.info(f"Total sources: {sum(len(w.sources) for w in workflows)}")
+    logger.info(f"Total outputs: {sum(len(w.targets) for w in workflows)}")
 
     macro_summary = macro_inventory.get_summary()
-    print(f"Macros found: {macro_summary['found']}")
-    print(f"Macros missing: {macro_summary['missing']}")
+    logger.info(f"Macros found: {macro_summary['found']}")
+    logger.info(f"Macros missing: {macro_summary['missing']}")
 
-    print(f"\nDocumentation: {output_dir / 'index.md'}")
+    logger.info(f"\nDocumentation: {output_dir / 'index.md'}")
     if args.generate_dbt:
-        print(f"DBT Project: {Path(args.generate_dbt) / 'dbt_project.yml'}")
+        logger.info(f"DBT Project: {Path(args.generate_dbt) / 'dbt_project.yml'}")
 
     return 0
 
@@ -225,7 +237,26 @@ Examples:
     analyze_parser.add_argument(
         '-v', '--verbose',
         action='store_true',
-        help='Enable verbose output'
+        help='Enable verbose/debug output'
+    )
+
+    analyze_parser.add_argument(
+        '-q', '--quiet',
+        action='store_true',
+        help='Suppress info messages, only show warnings and errors'
+    )
+
+    analyze_parser.add_argument(
+        '--log-file',
+        metavar='FILE',
+        help='Write logs to specified file (in addition to console)'
+    )
+
+    analyze_parser.add_argument(
+        '--default-schema',
+        default='raw',
+        metavar='NAME',
+        help='Default schema name for sources without explicit schema (default: raw)'
     )
 
     analyze_parser.add_argument(
