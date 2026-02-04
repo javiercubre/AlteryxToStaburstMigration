@@ -33,6 +33,7 @@ Facilitates migration from Alteryx ETL to **Starburst (Trino-based)** ELT archit
 - **External Table DDL**: Generates Trino CREATE TABLE statements for S3 data
 - **Interactive Resolution**: Prompts for S3 locations or uses config files
 - **S3 Setup Guide**: Generates Trino/Starburst S3 configuration documentation
+- **S3 Config Generator**: Interactive wizard to create `s3_mappings.json` configuration files
 
 ### Formula Conversion
 - **60+ Function Mappings**: Converts Alteryx formulas to Trino SQL
@@ -95,6 +96,30 @@ python main.py analyze . --s3-config s3_mappings.json --generate-dbt ./dbt
 python main.py analyze . --s3-bucket my-bucket --s3-region us-west-2 --s3-endpoint http://minio:9000
 ```
 
+### Generate S3 Mappings Configuration
+
+Use the interactive wizard to create `s3_mappings.json` configuration files:
+
+```bash
+# Run the interactive wizard
+python main.py generate-s3-config
+
+# Scan workflows first to discover sources
+python main.py generate-s3-config --scan ./workflows
+
+# Specify output file and default bucket
+python main.py generate-s3-config -o my_mappings.json --bucket my-data-lake
+
+# Pre-configure region
+python main.py generate-s3-config --region us-west-2
+```
+
+The wizard guides you through:
+1. **Configure defaults** - Set default bucket, region, format, and endpoint
+2. **Discover sources** - Scan Alteryx workflows to find data sources
+3. **Map sources to S3** - Configure S3 locations for each source
+4. **Add wildcard patterns** - Define patterns like `*.csv` for bulk mappings
+
 ### Macro Handling
 
 ```bash
@@ -120,6 +145,8 @@ python main.py analyze ./workflows \
 
 ## CLI Arguments
 
+### `analyze` Command
+
 | Argument | Description |
 |----------|-------------|
 | `path` | Path to workflow file or directory |
@@ -133,6 +160,17 @@ python main.py analyze ./workflows \
 | `--s3-config` | JSON file with S3 source mappings |
 | `--s3-region` | S3 region (default: us-east-1) |
 | `--s3-endpoint` | S3 endpoint URL (for S3-compatible services) |
+
+### `generate-s3-config` Command
+
+| Argument | Description |
+|----------|-------------|
+| `-o`, `--output` | Output file path (default: `s3_mappings.json`) |
+| `--scan` | Workflow paths to scan for source discovery |
+| `--bucket` | Pre-set default S3 bucket name |
+| `--region` | Pre-set default AWS region (default: us-east-1) |
+| `--extend` | Extend existing config file instead of creating new |
+| `--verbose`, `-v` | Verbose output |
 
 ## S3 Configuration File
 
@@ -303,13 +341,15 @@ AlteryxToStarburstMigration/
 ├── quality_validator.py          # Parallel validation tests
 ├── models.py                     # Data classes & enums
 ├── s3_config.py                  # S3 source configuration
+├── s3_mappings_generator.py      # Interactive S3 config wizard
 ├── trino_s3_templates.py         # Trino external table templates
 ├── dbt_macros/                   # 23 reusable DBT macros
 ├── tests/                        # Test suite
 │   ├── test_source_columns.py
 │   ├── test_formula_converter.py
 │   ├── test_s3_config.py
-│   └── test_s3_integration.py
+│   ├── test_s3_integration.py
+│   └── test_s3_mappings_generator.py
 └── samples/                      # Sample workflows and configs
     ├── *.yxmd
     ├── s3_config.json
@@ -324,6 +364,7 @@ python tests/test_source_columns.py
 python tests/test_formula_converter.py
 python tests/test_s3_config.py
 python tests/test_s3_integration.py
+python tests/test_s3_mappings_generator.py
 ```
 
 ## Example
