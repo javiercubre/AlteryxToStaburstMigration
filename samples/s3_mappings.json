@@ -1,0 +1,128 @@
+{
+  "_comment": "S3 Source Mappings Configuration for Alteryx to Starburst/DBT Migration",
+  "_version": "1.0",
+
+  "default_region": "us-east-1",
+  "default_bucket": "company-data-lake",
+  "default_format": "parquet",
+  "endpoint": null,
+
+  "mappings": {
+    "customers.csv": {
+      "bucket": "company-data-lake",
+      "prefix": "bronze/customers/",
+      "format": "parquet",
+      "region": "us-east-1",
+      "table_name": "stg_customers",
+      "columns": ["customer_id", "customer_name", "email", "created_at", "status"]
+    },
+
+    "orders.csv": {
+      "bucket": "company-data-lake",
+      "prefix": "bronze/orders/",
+      "format": "parquet",
+      "file_pattern": "*.parquet",
+      "table_name": "stg_orders",
+      "columns": ["order_id", "customer_id", "order_date", "total_amount", "status"]
+    },
+
+    "products.xlsx": {
+      "bucket": "company-data-lake",
+      "prefix": "bronze/products/",
+      "format": "parquet",
+      "table_name": "stg_products"
+    },
+
+    "inventory_levels.json": {
+      "bucket": "company-data-lake",
+      "prefix": "bronze/inventory/",
+      "format": "json",
+      "table_name": "stg_inventory"
+    },
+
+    "sales_transactions": {
+      "bucket": "company-data-lake",
+      "prefix": "silver/sales/transactions/",
+      "format": "parquet",
+      "region": "us-west-2",
+      "table_name": "int_sales_transactions",
+      "file_pattern": "year=*/month=*/*.parquet"
+    },
+
+    "dbo.CustomerMaster": {
+      "bucket": "company-data-lake",
+      "prefix": "bronze/legacy_db/customer_master/",
+      "format": "parquet",
+      "table_name": "stg_customer_master_legacy"
+    },
+
+    "analytics.fact_orders": {
+      "bucket": "company-analytics",
+      "prefix": "gold/fact_orders/",
+      "format": "parquet",
+      "region": "us-east-1",
+      "table_name": "fct_orders"
+    },
+
+    "*.csv": {
+      "bucket": "company-data-lake",
+      "prefix": "bronze/csv_imports/",
+      "format": "csv"
+    },
+
+    "*.xlsx": {
+      "bucket": "company-data-lake",
+      "prefix": "bronze/excel_imports/",
+      "format": "parquet"
+    },
+
+    "*.json": {
+      "bucket": "company-data-lake",
+      "prefix": "bronze/json_imports/",
+      "format": "json"
+    },
+
+    "raw_events_*": {
+      "bucket": "company-events",
+      "prefix": "raw/events/",
+      "format": "json",
+      "file_pattern": "*.json.gz"
+    },
+
+    "archive_*.parquet": {
+      "bucket": "company-archive",
+      "prefix": "historical/",
+      "format": "parquet",
+      "region": "us-east-2"
+    }
+  },
+
+  "minio_example": {
+    "_comment": "Example configuration for MinIO or other S3-compatible storage",
+    "default_region": "us-east-1",
+    "default_bucket": "local-data-lake",
+    "default_format": "parquet",
+    "endpoint": "http://minio.local:9000",
+    "mappings": {
+      "local_customers.csv": {
+        "bucket": "local-data-lake",
+        "prefix": "bronze/customers/",
+        "format": "parquet",
+        "endpoint": "http://minio.local:9000"
+      }
+    }
+  },
+
+  "aws_profiles_example": {
+    "_comment": "Example showing AWS credentials profile usage",
+    "mappings": {
+      "sensitive_data.csv": {
+        "bucket": "secure-data-lake",
+        "prefix": "bronze/sensitive/",
+        "format": "parquet",
+        "region": "us-east-1",
+        "credentials_profile": "production-readonly"
+      }
+    }
+  }
+}
