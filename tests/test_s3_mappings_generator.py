@@ -75,7 +75,8 @@ def test_add_mapping_programmatic():
     """Test adding mappings programmatically."""
     generator = S3MappingsGenerator(
         default_bucket="test-bucket",
-        default_region="us-west-2"
+        default_s3_user="test-user",
+        default_s3_password="test-password"
     )
 
     # Add a simple mapping
@@ -92,17 +93,21 @@ def test_add_mapping_programmatic():
     assert generator.mappings["customers.csv"]["format"] == "parquet"
     assert generator.mappings["customers.csv"]["table_name"] == "stg_customers"
 
-    # Add mapping with explicit table name
+    # Add mapping with explicit table name and credentials
     generator.add_mapping_programmatic(
         source_name="orders.xlsx",
         bucket="data-lake",
         prefix="bronze/orders/",
         table_name="custom_orders_table",
-        columns=["order_id", "customer_id", "total"]
+        columns=["order_id", "customer_id", "total"],
+        s3_user="other-user",
+        s3_password="other-password"
     )
 
     assert generator.mappings["orders.xlsx"]["table_name"] == "custom_orders_table"
     assert generator.mappings["orders.xlsx"]["columns"] == ["order_id", "customer_id", "total"]
+    assert generator.mappings["orders.xlsx"]["s3_user"] == "other-user"
+    assert generator.mappings["orders.xlsx"]["s3_password"] == "other-password"
 
     print("[PASS] test_add_mapping_programmatic")
 
@@ -115,9 +120,10 @@ def test_save_and_load_file():
         # Create and save configuration
         generator = S3MappingsGenerator(
             default_bucket="test-bucket",
-            default_region="eu-west-1",
             default_format="csv",
-            default_endpoint="http://minio.local:9000"
+            default_endpoint="http://minio.local:9000",
+            default_s3_user="test-user",
+            default_s3_password="test-password"
         )
 
         generator.add_mapping_programmatic(
@@ -136,9 +142,10 @@ def test_save_and_load_file():
             data = json.load(f)
 
         assert data["default_bucket"] == "test-bucket"
-        assert data["default_region"] == "eu-west-1"
         assert data["default_format"] == "csv"
         assert data["endpoint"] == "http://minio.local:9000"
+        assert data["s3_user"] == "test-user"
+        assert data["s3_password"] == "test-password"
         assert "test.csv" in data["mappings"]
 
         # Load into new generator
@@ -146,9 +153,10 @@ def test_save_and_load_file():
         generator2.load_from_file(output_path)
 
         assert generator2.default_bucket == "test-bucket"
-        assert generator2.default_region == "eu-west-1"
         assert generator2.default_format == "csv"
         assert generator2.default_endpoint == "http://minio.local:9000"
+        assert generator2.default_s3_user == "test-user"
+        assert generator2.default_s3_password == "test-password"
         assert "test.csv" in generator2.mappings
 
     print("[PASS] test_save_and_load_file")
@@ -158,8 +166,9 @@ def test_default_mapping_creation():
     """Test creating mappings with defaults."""
     generator = S3MappingsGenerator(
         default_bucket="my-data-lake",
-        default_region="us-east-1",
-        default_format="parquet"
+        default_format="parquet",
+        default_s3_user="test-user",
+        default_s3_password="test-password"
     )
 
     # Simulate creating a default mapping
@@ -172,7 +181,8 @@ def test_default_mapping_creation():
     assert mapping["bucket"] == "my-data-lake"
     assert mapping["prefix"] == "bronze/stg_sales_data/"
     assert mapping["format"] == "parquet"
-    assert mapping["region"] == "us-east-1"
+    assert mapping["s3_user"] == "test-user"
+    assert mapping["s3_password"] == "test-password"
     assert mapping["table_name"] == "stg_sales_data"
 
     print("[PASS] test_default_mapping_creation")
@@ -182,22 +192,25 @@ def test_generator_initialization():
     """Test generator initialization with various options."""
     # Default initialization
     gen1 = S3MappingsGenerator()
-    assert gen1.default_region == "us-east-1"
     assert gen1.default_format == "parquet"
     assert gen1.default_bucket is None
     assert gen1.default_endpoint is None
+    assert gen1.default_s3_user is None
+    assert gen1.default_s3_password is None
 
     # Custom initialization
     gen2 = S3MappingsGenerator(
         default_bucket="custom-bucket",
-        default_region="ap-southeast-1",
         default_format="json",
-        default_endpoint="http://localhost:9000"
+        default_endpoint="http://localhost:9000",
+        default_s3_user="test-user",
+        default_s3_password="test-password"
     )
     assert gen2.default_bucket == "custom-bucket"
-    assert gen2.default_region == "ap-southeast-1"
     assert gen2.default_format == "json"
     assert gen2.default_endpoint == "http://localhost:9000"
+    assert gen2.default_s3_user == "test-user"
+    assert gen2.default_s3_password == "test-password"
 
     print("[PASS] test_generator_initialization")
 

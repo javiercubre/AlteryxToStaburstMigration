@@ -92,8 +92,8 @@ python main.py analyze . --s3-bucket my-data-lake --generate-dbt ./dbt
 # Use S3 configuration file with mappings
 python main.py analyze . --s3-config s3_mappings.json --generate-dbt ./dbt
 
-# Specify S3 region and endpoint (for MinIO, etc.)
-python main.py analyze . --s3-bucket my-bucket --s3-region us-west-2 --s3-endpoint http://minio:9000
+# Specify S3 credentials and endpoint (for MinIO, etc.)
+python main.py analyze . --s3-bucket my-bucket --s3-user access-key --s3-password secret-key --s3-endpoint http://minio:9000
 ```
 
 ### Generate S3 Mappings Configuration
@@ -110,12 +110,12 @@ python main.py generate-s3-config --scan ./workflows
 # Specify output file and default bucket
 python main.py generate-s3-config -o my_mappings.json --bucket my-data-lake
 
-# Pre-configure region
-python main.py generate-s3-config --region us-west-2
+# Pre-configure credentials
+python main.py generate-s3-config --s3-user access-key --s3-password secret-key
 ```
 
 The wizard guides you through:
-1. **Configure defaults** - Set default bucket, region, format, and endpoint
+1. **Configure defaults** - Set default bucket, format, endpoint, and credentials
 2. **Discover sources** - Scan Alteryx workflows to find data sources
 3. **Map sources to S3** - Configure S3 locations for each source
 4. **Add wildcard patterns** - Define patterns like `*.csv` for bulk mappings
@@ -158,8 +158,9 @@ python main.py analyze ./workflows \
 | `--verbose`, `-v` | Verbose output |
 | `--s3-bucket` | Default S3 bucket for all sources |
 | `--s3-config` | JSON file with S3 source mappings |
-| `--s3-region` | S3 region (default: us-east-1) |
 | `--s3-endpoint` | S3 endpoint URL (for S3-compatible services) |
+| `--s3-user` | S3 access key / username for authentication |
+| `--s3-password` | S3 secret key / password for authentication |
 
 ### `generate-s3-config` Command
 
@@ -168,8 +169,9 @@ python main.py analyze ./workflows \
 | `-o`, `--output` | Output file path (default: `s3_mappings.json`) |
 | `--scan` | Workflow paths to scan for source discovery |
 | `--bucket` | Pre-set default S3 bucket name |
-| `--region` | Pre-set default AWS region (default: us-east-1) |
 | `--extend` | Extend existing config file instead of creating new |
+| `--s3-user` | Pre-set S3 access key / username |
+| `--s3-password` | Pre-set S3 secret key / password |
 | `--verbose`, `-v` | Verbose output |
 
 ## S3 Configuration File
@@ -178,9 +180,10 @@ Create a JSON file to map Alteryx sources to S3 locations:
 
 ```json
 {
-  "default_region": "us-east-1",
   "default_bucket": "my-data-lake",
   "endpoint": null,
+  "s3_user": "your-access-key",
+  "s3_password": "your-secret-key",
   "mappings": {
     "customers.csv": {
       "bucket": "my-data-lake",

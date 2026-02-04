@@ -988,7 +988,7 @@ class DocumentationGenerator:
         content.extend([
             f"- **S3 Sources Configured**: {summary['resolved']}",
             f"- **Default Bucket**: `{summary['default_bucket'] or 'Not set'}`",
-            f"- **Default Region**: `{summary['default_region']}`",
+            f"- **Credentials Configured**: `{'Yes' if summary.get('has_credentials') else 'No'}`",
             "",
         ])
 
@@ -1035,9 +1035,8 @@ class DocumentationGenerator:
             "```properties",
             "connector.name=hive",
             "hive.metastore.uri=thrift://metastore:9083",
-            "hive.s3.aws-access-key=${ENV:AWS_ACCESS_KEY_ID}",
-            "hive.s3.aws-secret-key=${ENV:AWS_SECRET_ACCESS_KEY}",
-            f"hive.s3.region={summary['default_region']}",
+            "hive.s3.aws-access-key=${ENV:S3_USER}",
+            "hive.s3.aws-secret-key=${ENV:S3_PASSWORD}",
             "hive.s3.path-style-access=false",
             "```",
             "",
@@ -1161,27 +1160,28 @@ class DocumentationGenerator:
             "",
         ])
 
-        # AWS Credentials
+        # S3 Credentials
         content.extend([
-            "## AWS Credentials Setup",
+            "## S3 Credentials Setup",
             "",
             "### Option 1: Environment Variables",
             "",
             "```bash",
-            "export AWS_ACCESS_KEY_ID=your-access-key",
-            "export AWS_SECRET_ACCESS_KEY=your-secret-key",
-            f"export AWS_REGION={summary['default_region']}",
+            "export S3_USER=your-access-key",
+            "export S3_PASSWORD=your-secret-key",
             "```",
             "",
-            "### Option 2: AWS Profile",
+            "### Option 2: Configuration File",
             "",
-            "Configure `~/.aws/credentials`:",
+            "Add credentials to your S3 config file (`s3_mappings.json`):",
             "",
-            "```ini",
-            "[default]",
-            "aws_access_key_id = your-access-key",
-            "aws_secret_access_key = your-secret-key",
-            f"region = {summary['default_region']}",
+            "```json",
+            "{",
+            '  "s3_user": "your-access-key",',
+            '  "s3_password": "your-secret-key",',
+            '  "default_bucket": "your-bucket",',
+            "  ...",
+            "}",
             "```",
             "",
         ])

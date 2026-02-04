@@ -224,23 +224,26 @@ The tool supports both modes:
 ## S3 Source Integration (V2)
 
 The tool supports replacing Alteryx file/database sources with S3-compatible bucket locations for Trino/Starburst.
+Uses user/password authentication for S3 connections.
 
 ### CLI Arguments
 
 ```bash
 --s3-config FILE     # JSON file with S3 mappings (see samples/s3_config.json)
 --s3-bucket NAME     # Default bucket for all sources
---s3-region REGION   # Default region (default: us-east-1)
 --s3-endpoint URL    # For S3-compatible services (MinIO, etc.)
+--s3-user KEY        # S3 access key / username for authentication
+--s3-password SECRET # S3 secret key / password for authentication
 ```
 
 ### S3 Config File Format
 
 ```json
 {
-  "default_region": "us-east-1",
   "default_bucket": "my-data-lake",
   "endpoint": null,
+  "s3_user": "your-access-key",
+  "s3_password": "your-secret-key",
   "mappings": {
     "customers.csv": {
       "bucket": "my-data-lake",
