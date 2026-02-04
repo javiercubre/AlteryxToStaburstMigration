@@ -7,6 +7,7 @@ to facilitate migration to Trino/DBT ELT architecture.
 
 Usage:
     python main.py analyze <path> [options]
+    python main.py generate-s3-config [options]
     python main.py --help
 
 Examples:
@@ -15,6 +16,12 @@ Examples:
     python main.py analyze . --output ./docs          # Specify output directory
     python main.py analyze . --generate-dbt ./dbt     # Generate DBT scaffolding
     python main.py analyze . --macro-dir ./macros     # Specify macro directory
+
+    # S3 mappings generation
+    python main.py generate-s3-config                        # Interactive wizard
+    python main.py generate-s3-config --scan ./workflows     # Discover sources first
+    python main.py generate-s3-config -o my_mappings.json    # Custom output file
+    python main.py generate-s3-config --bucket my-lake       # Pre-set bucket
 """
 import argparse
 import sys
@@ -26,6 +33,7 @@ from macro_handler import MacroResolver, MacroInventory
 from doc_generator import DocumentationGenerator
 from dbt_generator import DBTGenerator
 from s3_config import S3ConfigResolver
+from s3_mappings_generator import S3MappingsGenerator
 from models import AlteryxWorkflow
 from logging_config import setup_logging, get_logger
 
@@ -227,6 +235,58 @@ def analyze(args) -> int:
     return 0
 
 
+def generate_s3_config(args) -> int:
+    """Generate S3 mappings configuration interactively."""
+    # Setup logging
+    setup_logging(
+        verbose=args.verbose,
+        quiet=args.quiet,
+        log_file=getattr(args, 'log_file', None)
+    )
+
+    # Check for non-interactive mode
+    if args.non_interactive:
+        logger.error("The generate-s3-config command requires interactive mode.")
+        logger.error("Remove the --non-interactive flag to use this command.")
+        return 1
+
+    # Collect workflow paths if provided
+    workflow_paths = []
+    if args.scan:
+        for path_str in args.scan:
+            path = Path(path_str).resolve()
+            if path.exists():
+                workflow_paths.append(str(path))
+            else:
+                logger.warning(f"Path not found: {path_str}")
+
+    # Initialize generator with any provided defaults
+    generator = S3MappingsGenerator(
+        default_bucket=args.bucket,
+        default_region=args.region,
+        default_format=args.format,
+        default_endpoint=args.endpoint,
+    )
+
+    # Load existing config if provided (for extending)
+    if args.extend:
+        try:
+            generator.load_from_file(args.extend)
+            logger.info(f"Loaded existing configuration from: {args.extend}")
+        except FileNotFoundError:
+            logger.error(f"Configuration file not found: {args.extend}")
+            return 1
+        except Exception as e:
+            logger.error(f"Error loading configuration: {e}")
+            return 1
+
+    # Run the interactive wizard
+    output_path = args.output or "s3_mappings.json"
+    success = generator.run_interactive(output_path, workflow_paths)
+
+    return 0 if success else 1
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -240,6 +300,10 @@ Examples:
   %(prog)s analyze . --generate-dbt ./dbt      Also generate DBT scaffolding
   %(prog)s analyze . --macro-dir ./macros      Specify macro search directory
   %(prog)s analyze . --non-interactive         Skip prompts for missing macros
+
+  %(prog)s generate-s3-config                  Interactive S3 config wizard
+  %(prog)s generate-s3-config --scan ./wf      Scan workflows for sources first
+  %(prog)s generate-s3-config --bucket my-lake Pre-set default bucket
         """
     )
 
@@ -343,6 +407,76 @@ Examples:
         help='S3-compatible endpoint URL (for MinIO, etc.)'
     )
 
+    # Generate S3 config command
+    s3_config_parser = subparsers.add_parser(
+        'generate-s3-config',
+        help='Interactively generate an S3 mappings configuration file'
+    )
+
+    s3_config_parser.add_argument(
+        '-o', '--output',
+        metavar='FILE',
+        default='s3_mappings.json',
+        help='Output file path (default: s3_mappings.json)'
+    )
+
+    s3_config_parser.add_argument(
+        '--scan',
+        action='append',
+        metavar='PATH',
+        help='Scan workflow files/directories for sources (can be specified multiple times)'
+    )
+
+    s3_config_parser.add_argument(
+        '--extend',
+        metavar='FILE',
+        help='Extend an existing S3 config file with additional mappings'
+    )
+
+    s3_config_parser.add_argument(
+        '--bucket',
+        metavar='NAME',
+        help='Pre-set default S3 bucket name'
+    )
+
+    s3_config_parser.add_argument(
+        '--region',
+        default='us-east-1',
+        metavar='REGION',
+        help='Pre-set default AWS region (default: us-east-1)'
+    )
+
+    s3_config_parser.add_argument(
+        '--format',
+        default='parquet',
+        choices=['parquet', 'csv', 'json', 'orc', 'avro'],
+        help='Pre-set default file format (default: parquet)'
+    )
+
+    s3_config_parser.add_argument(
+        '--endpoint',
+        metavar='URL',
+        help='Pre-set S3-compatible endpoint URL (for MinIO, etc.)'
+    )
+
+    s3_config_parser.add_argument(
+        '--non-interactive',
+        action='store_true',
+        help='Not supported for this command (will show error)'
+    )
+
+    s3_config_parser.add_argument(
+        '-v', '--verbose',
+        action='store_true',
+        help='Enable verbose/debug output'
+    )
+
+    s3_config_parser.add_argument(
+        '-q', '--quiet',
+        action='store_true',
+        help='Suppress info messages, only show warnings and errors'
+    )
+
     # Parse arguments
     args = parser.parse_args()
 
@@ -352,6 +486,9 @@ Examples:
 
     if args.command == 'analyze':
         return analyze(args)
+
+    if args.command == 'generate-s3-config':
+        return generate_s3_config(args)
 
     return 0
 
