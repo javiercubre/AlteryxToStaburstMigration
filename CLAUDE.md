@@ -29,10 +29,17 @@ python main.py analyze . --non-interactive                  # Skip prompts
 python main.py analyze . --s3-bucket my-data-lake --generate-dbt ./dbt
 python main.py analyze . --s3-config s3_mappings.json --non-interactive
 
+# Generate S3 mappings configuration interactively
+python main.py generate-s3-config                        # Interactive wizard
+python main.py generate-s3-config --scan ./workflows     # Discover sources first
+python main.py generate-s3-config -o my_mappings.json    # Custom output file
+python main.py generate-s3-config --bucket my-lake       # Pre-set bucket
+
 # Run tests
 python tests/test_source_columns.py
 python tests/test_s3_config.py
 python tests/test_s3_integration.py
+python tests/test_s3_mappings_generator.py
 ```
 
 ## Directory Structure
@@ -51,6 +58,7 @@ python tests/test_s3_integration.py
 ├── quality_validator.py          # Parallel validation for migration testing
 ├── models.py                     # Data classes & enums
 ├── s3_config.py                  # S3 source configuration and interactive resolution
+├── s3_mappings_generator.py      # Interactive S3 mappings JSON generator
 ├── trino_s3_templates.py         # Trino external table SQL templates for S3
 ├── dbt_macros/                   # 23 reusable DBT macros (copied to generated project)
 │   ├── aggregation.sql           # Summarize tool macros
@@ -63,6 +71,7 @@ python tests/test_s3_integration.py
 │   ├── test_formula_converter.py # Formula conversion tests
 │   ├── test_s3_config.py         # S3 configuration tests
 │   ├── test_s3_integration.py    # S3 integration tests
+│   ├── test_s3_mappings_generator.py  # S3 mappings generator tests
 │   └── test_data/                # Test fixtures (CSV, JSON)
 └── samples/
     ├── *.yxmd                    # Sample Alteryx workflows
@@ -86,6 +95,7 @@ python tests/test_s3_integration.py
 | `formula_converter.py` | ~400 | Alteryx formula → Trino SQL with 60+ function mappings |
 | `quality_validator.py` | ~750 | Parallel validation tests, S3 connectivity validation |
 | `s3_config.py` | ~450 | S3 source configuration, interactive resolution, session caching |
+| `s3_mappings_generator.py` | ~480 | Interactive wizard for generating s3_mappings.json config |
 | `trino_s3_templates.py` | ~390 | Trino external table DDL, bronze model templates for S3 |
 
 **Total Macro Coverage:** 23 comprehensive DBT macros covering 85%+ of Alteryx tools
