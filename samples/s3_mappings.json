@@ -2,17 +2,17 @@
   "_comment": "S3 Source Mappings Configuration for Alteryx to Starburst/DBT Migration",
   "_version": "1.0",
 
-  "default_region": "us-east-1",
   "default_bucket": "company-data-lake",
   "default_format": "parquet",
   "endpoint": null,
+  "s3_user": "your-access-key",
+  "s3_password": "your-secret-key",
 
   "mappings": {
     "customers.csv": {
       "bucket": "company-data-lake",
       "prefix": "bronze/customers/",
       "format": "parquet",
-      "region": "us-east-1",
       "table_name": "stg_customers",
       "columns": ["customer_id", "customer_name", "email", "created_at", "status"]
     },
@@ -44,7 +44,6 @@
       "bucket": "company-data-lake",
       "prefix": "silver/sales/transactions/",
       "format": "parquet",
-      "region": "us-west-2",
       "table_name": "int_sales_transactions",
       "file_pattern": "year=*/month=*/*.parquet"
     },
@@ -60,7 +59,6 @@
       "bucket": "company-analytics",
       "prefix": "gold/fact_orders/",
       "format": "parquet",
-      "region": "us-east-1",
       "table_name": "fct_orders"
     },
 
@@ -92,36 +90,23 @@
     "archive_*.parquet": {
       "bucket": "company-archive",
       "prefix": "historical/",
-      "format": "parquet",
-      "region": "us-east-2"
+      "format": "parquet"
     }
   },
 
   "minio_example": {
     "_comment": "Example configuration for MinIO or other S3-compatible storage",
-    "default_region": "us-east-1",
     "default_bucket": "local-data-lake",
     "default_format": "parquet",
     "endpoint": "http://minio.local:9000",
+    "s3_user": "minio-access-key",
+    "s3_password": "minio-secret-key",
     "mappings": {
       "local_customers.csv": {
         "bucket": "local-data-lake",
         "prefix": "bronze/customers/",
         "format": "parquet",
         "endpoint": "http://minio.local:9000"
-      }
-    }
-  },
-
-  "aws_profiles_example": {
-    "_comment": "Example showing AWS credentials profile usage",
-    "mappings": {
-      "sensitive_data.csv": {
-        "bucket": "secure-data-lake",
-        "prefix": "bronze/sensitive/",
-        "format": "parquet",
-        "region": "us-east-1",
-        "credentials_profile": "production-readonly"
       }
     }
   }

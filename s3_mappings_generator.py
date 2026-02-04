@@ -24,13 +24,15 @@ class S3MappingsGenerator:
 
     Scans Alteryx workflows to discover data sources, then guides the user
     through mapping each source to an S3 location.
+    Uses user/password authentication for S3 connections.
     """
 
     # Default settings
     default_bucket: Optional[str] = None
-    default_region: str = "us-east-1"
     default_format: str = "parquet"
     default_endpoint: Optional[str] = None
+    default_s3_user: Optional[str] = None  # S3 access key / username
+    default_s3_password: Optional[str] = None  # S3 secret key / password
 
     # Generated mappings
     mappings: Dict[str, Dict[str, Any]] = field(default_factory=dict)
@@ -95,10 +97,6 @@ class S3MappingsGenerator:
             bucket = input(f"Default S3 bucket name [{self.default_bucket or 'my-data-lake'}]: ").strip()
             self.default_bucket = bucket or self.default_bucket or "my-data-lake"
 
-            # Default region
-            region = input(f"Default AWS region [{self.default_region}]: ").strip()
-            self.default_region = region or self.default_region
-
             # Default format
             print("\nSupported formats: parquet, csv, json, orc, avro")
             fmt = input(f"Default file format [{self.default_format}]: ").strip().lower()
@@ -112,12 +110,24 @@ class S3MappingsGenerator:
             if endpoint:
                 self.default_endpoint = endpoint
 
+            # S3 credentials
+            print("\nS3 Authentication (Access Key / Secret Key)")
+            s3_user = input(f"S3 User/Access Key [{self.default_s3_user or ''}]: ").strip()
+            if s3_user:
+                self.default_s3_user = s3_user
+
+            s3_password = input(f"S3 Password/Secret Key [{self.default_s3_password and '****' or ''}]: ").strip()
+            if s3_password:
+                self.default_s3_password = s3_password
+
             print(f"\n[OK] Defaults configured:")
             print(f"     Bucket: {self.default_bucket}")
-            print(f"     Region: {self.default_region}")
             print(f"     Format: {self.default_format}")
             if self.default_endpoint:
                 print(f"     Endpoint: {self.default_endpoint}")
+            if self.default_s3_user:
+                print(f"     S3 User: {self.default_s3_user}")
+                print(f"     S3 Password: {'****' if self.default_s3_password else '(not set)'}")
             print()
 
             return True
@@ -259,12 +269,15 @@ class S3MappingsGenerator:
             'bucket': self.default_bucket,
             'prefix': prefix,
             'format': self.default_format,
-            'region': self.default_region,
             'table_name': table_name,
         }
 
         if self.default_endpoint:
             self.mappings[source_name]['endpoint'] = self.default_endpoint
+        if self.default_s3_user:
+            self.mappings[source_name]['s3_user'] = self.default_s3_user
+        if self.default_s3_password:
+            self.mappings[source_name]['s3_password'] = self.default_s3_password
 
         print(f"  -> s3://{self.default_bucket}/{prefix}")
         return True
@@ -293,8 +306,9 @@ class S3MappingsGenerator:
                 print(f"  Invalid format, using {self.default_format}")
                 fmt = ''
 
-            # Region
-            region = input(f"Region [{self.default_region}]: ").strip() or self.default_region
+            # S3 credentials (optional override)
+            s3_user = input(f"S3 User/Access Key [{self.default_s3_user or ''}]: ").strip() or self.default_s3_user
+            s3_password = input(f"S3 Password/Secret Key [{self.default_s3_password and '****' or ''}]: ").strip() or self.default_s3_password
 
             # Columns (optional)
             print("Enter column names separated by commas (optional, press Enter to skip)")
@@ -306,7 +320,6 @@ class S3MappingsGenerator:
                 'bucket': bucket,
                 'prefix': prefix,
                 'format': fmt or self.default_format,
-                'region': region,
                 'table_name': table_name,
             }
 
@@ -315,6 +328,10 @@ class S3MappingsGenerator:
 
             if self.default_endpoint:
                 self.mappings[source_name]['endpoint'] = self.default_endpoint
+            if s3_user:
+                self.mappings[source_name]['s3_user'] = s3_user
+            if s3_password:
+                self.mappings[source_name]['s3_password'] = s3_password
 
             print(f"  -> s3://{bucket}/{prefix}")
             return True
@@ -394,20 +411,27 @@ class S3MappingsGenerator:
             '_comment': 'S3 Source Mappings Configuration for Alteryx to Starburst/DBT Migration',
             '_version': '1.0',
             '_generated_by': 'S3 Mappings Generator',
-            'default_region': self.default_region,
             'default_bucket': self.default_bucket,
             'default_format': self.default_format,
             'endpoint': self.default_endpoint,
             'mappings': self.mappings,
         }
 
+        # Include credentials in config if set
+        if self.default_s3_user:
+            config['s3_user'] = self.default_s3_user
+        if self.default_s3_password:
+            config['s3_password'] = self.default_s3_password
+
         # Show summary
         print(f"\nConfiguration Summary:")
         print(f"  Default Bucket: {self.default_bucket}")
-        print(f"  Default Region: {self.default_region}")
         print(f"  Default Format: {self.default_format}")
         if self.default_endpoint:
             print(f"  Endpoint: {self.default_endpoint}")
+        if self.default_s3_user:
+            print(f"  S3 User: {self.default_s3_user}")
+            print(f"  S3 Password: {'****' if self.default_s3_password else '(not set)'}")
         print(f"  Total Mappings: {len(self.mappings)}")
 
         if self.mappings:
@@ -488,10 +512,12 @@ class S3MappingsGenerator:
         return name or 'stg_unnamed_source'
 
     def add_mapping_programmatic(self, source_name: str, bucket: str, prefix: str,
-                                  file_format: str = "parquet", region: str = "us-east-1",
+                                  file_format: str = "parquet",
                                   table_name: Optional[str] = None,
                                   columns: Optional[List[str]] = None,
-                                  endpoint: Optional[str] = None) -> None:
+                                  endpoint: Optional[str] = None,
+                                  s3_user: Optional[str] = None,
+                                  s3_password: Optional[str] = None) -> None:
         """Add a mapping programmatically (non-interactive).
 
         Args:
@@ -499,16 +525,16 @@ class S3MappingsGenerator:
             bucket: S3 bucket name
             prefix: S3 prefix/folder path
             file_format: File format (parquet, csv, json, etc.)
-            region: AWS region
             table_name: Target table name (auto-derived if not provided)
             columns: Optional list of column names
             endpoint: S3-compatible endpoint URL
+            s3_user: S3 access key / username
+            s3_password: S3 secret key / password
         """
         mapping = {
             'bucket': bucket,
             'prefix': prefix,
             'format': file_format,
-            'region': region,
             'table_name': table_name or self._derive_table_name(source_name),
         }
 
@@ -516,6 +542,10 @@ class S3MappingsGenerator:
             mapping['columns'] = columns
         if endpoint:
             mapping['endpoint'] = endpoint
+        if s3_user:
+            mapping['s3_user'] = s3_user
+        if s3_password:
+            mapping['s3_password'] = s3_password
 
         self.mappings[source_name] = mapping
 
@@ -528,12 +558,17 @@ class S3MappingsGenerator:
         config = {
             '_comment': 'S3 Source Mappings Configuration for Alteryx to Starburst/DBT Migration',
             '_version': '1.0',
-            'default_region': self.default_region,
             'default_bucket': self.default_bucket,
             'default_format': self.default_format,
             'endpoint': self.default_endpoint,
             'mappings': self.mappings,
         }
+
+        # Include credentials if set
+        if self.default_s3_user:
+            config['s3_user'] = self.default_s3_user
+        if self.default_s3_password:
+            config['s3_password'] = self.default_s3_password
 
         output_file = Path(output_path)
         output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -556,10 +591,11 @@ class S3MappingsGenerator:
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
-        self.default_region = data.get('default_region', self.default_region)
         self.default_bucket = data.get('default_bucket', self.default_bucket)
         self.default_format = data.get('default_format', self.default_format)
         self.default_endpoint = data.get('endpoint')
+        self.default_s3_user = data.get('s3_user')
+        self.default_s3_password = data.get('s3_password')
         self.mappings = data.get('mappings', {})
 
         logger.info(f"Loaded {len(self.mappings)} mappings from: {config_path}")
@@ -568,21 +604,24 @@ class S3MappingsGenerator:
 def run_generator(output_path: str = "s3_mappings.json",
                   workflow_paths: Optional[List[str]] = None,
                   default_bucket: Optional[str] = None,
-                  default_region: str = "us-east-1") -> bool:
+                  default_s3_user: Optional[str] = None,
+                  default_s3_password: Optional[str] = None) -> bool:
     """Run the interactive S3 mappings generator.
 
     Args:
         output_path: Path to save the generated JSON file
         workflow_paths: Optional list of workflow paths to scan
         default_bucket: Default S3 bucket name
-        default_region: Default AWS region
+        default_s3_user: Default S3 access key / username
+        default_s3_password: Default S3 secret key / password
 
     Returns:
         True if configuration was saved successfully
     """
     generator = S3MappingsGenerator(
         default_bucket=default_bucket,
-        default_region=default_region,
+        default_s3_user=default_s3_user,
+        default_s3_password=default_s3_password,
     )
 
     return generator.run_interactive(output_path, workflow_paths)
@@ -598,7 +637,8 @@ if __name__ == '__main__':
     parser.add_argument('--workflows', nargs='*',
                         help='Workflow paths to scan for sources')
     parser.add_argument('--bucket', help='Default S3 bucket')
-    parser.add_argument('--region', default='us-east-1', help='Default AWS region')
+    parser.add_argument('--s3-user', help='Default S3 access key / username')
+    parser.add_argument('--s3-password', help='Default S3 secret key / password')
 
     args = parser.parse_args()
 
@@ -606,7 +646,8 @@ if __name__ == '__main__':
         output_path=args.output,
         workflow_paths=args.workflows,
         default_bucket=args.bucket,
-        default_region=args.region,
+        default_s3_user=args.s3_user,
+        default_s3_password=args.s3_password,
     )
 
     sys.exit(0 if success else 1)

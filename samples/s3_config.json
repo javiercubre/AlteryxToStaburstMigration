@@ -1,14 +1,14 @@
 {
-  "default_region": "us-east-1",
   "default_bucket": "my-data-lake",
   "default_format": "parquet",
   "endpoint": null,
+  "s3_user": "your-access-key",
+  "s3_password": "your-secret-key",
   "mappings": {
     "customers.csv": {
       "bucket": "my-data-lake",
       "prefix": "bronze/customers/",
-      "format": "parquet",
-      "region": "us-east-1"
+      "format": "parquet"
     },
     "orders.csv": {
       "bucket": "my-data-lake",

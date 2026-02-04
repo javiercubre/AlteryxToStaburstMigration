@@ -99,8 +99,9 @@ def analyze(args) -> int:
         interactive=not args.non_interactive,
         skip_all=args.non_interactive,
         default_bucket=args.s3_bucket,
-        default_region=args.s3_region,
         default_endpoint=args.s3_endpoint,
+        default_s3_user=args.s3_user,
+        default_s3_password=args.s3_password,
     )
 
     # Load S3 config file if provided
@@ -263,9 +264,10 @@ def generate_s3_config(args) -> int:
     # Initialize generator with any provided defaults
     generator = S3MappingsGenerator(
         default_bucket=args.bucket,
-        default_region=args.region,
         default_format=args.format,
         default_endpoint=args.endpoint,
+        default_s3_user=args.s3_user,
+        default_s3_password=args.s3_password,
     )
 
     # Load existing config if provided (for extending)
@@ -395,16 +397,21 @@ Examples:
     )
 
     analyze_parser.add_argument(
-        '--s3-region',
-        default='us-east-1',
-        metavar='REGION',
-        help='Default AWS region for S3 sources (default: us-east-1)'
-    )
-
-    analyze_parser.add_argument(
         '--s3-endpoint',
         metavar='URL',
         help='S3-compatible endpoint URL (for MinIO, etc.)'
+    )
+
+    analyze_parser.add_argument(
+        '--s3-user',
+        metavar='KEY',
+        help='S3 access key / username for authentication'
+    )
+
+    analyze_parser.add_argument(
+        '--s3-password',
+        metavar='SECRET',
+        help='S3 secret key / password for authentication'
     )
 
     # Generate S3 config command
@@ -440,13 +447,6 @@ Examples:
     )
 
     s3_config_parser.add_argument(
-        '--region',
-        default='us-east-1',
-        metavar='REGION',
-        help='Pre-set default AWS region (default: us-east-1)'
-    )
-
-    s3_config_parser.add_argument(
         '--format',
         default='parquet',
         choices=['parquet', 'csv', 'json', 'orc', 'avro'],
@@ -457,6 +457,18 @@ Examples:
         '--endpoint',
         metavar='URL',
         help='Pre-set S3-compatible endpoint URL (for MinIO, etc.)'
+    )
+
+    s3_config_parser.add_argument(
+        '--s3-user',
+        metavar='KEY',
+        help='Pre-set S3 access key / username'
+    )
+
+    s3_config_parser.add_argument(
+        '--s3-password',
+        metavar='SECRET',
+        help='Pre-set S3 secret key / password'
     )
 
     s3_config_parser.add_argument(

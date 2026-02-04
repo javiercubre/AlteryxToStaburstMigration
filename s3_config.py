@@ -23,13 +23,15 @@ class S3ConfigResolver:
     """Handles S3 source resolution with caching and interactive prompts.
 
     Follows the same pattern as MacroResolver for consistency.
+    Uses user/password authentication for S3 connections.
     """
 
     # Default settings
     default_bucket: Optional[str] = None
-    default_region: str = "us-east-1"
     default_endpoint: Optional[str] = None  # For S3-compatible services
     default_format: str = "parquet"
+    default_s3_user: Optional[str] = None  # S3 access key / username
+    default_s3_password: Optional[str] = None  # S3 secret key / password
 
     # Cache of resolved S3 configs (source_name -> S3SourceConfig)
     resolved_configs: Dict[str, S3SourceConfig] = field(default_factory=dict)
@@ -54,9 +56,10 @@ class S3ConfigResolver:
 
         Expected format:
         {
-            "default_region": "us-east-1",
             "default_bucket": "my-data-lake",
             "endpoint": null,
+            "s3_user": "access_key",
+            "s3_password": "secret_key",
             "mappings": {
                 "customers.csv": {
                     "bucket": "my-data-lake",
@@ -74,26 +77,30 @@ class S3ConfigResolver:
             data = json.load(f)
 
         # Load defaults
-        if 'default_region' in data:
-            self.default_region = data['default_region']
         if 'default_bucket' in data:
             self.default_bucket = data['default_bucket']
         if 'endpoint' in data:
             self.default_endpoint = data['endpoint']
         if 'default_format' in data:
             self.default_format = data['default_format']
+        if 's3_user' in data:
+            self.default_s3_user = data['s3_user']
+        if 's3_password' in data:
+            self.default_s3_password = data['s3_password']
 
         # Load mappings
         for source_name, config_data in data.get('mappings', {}).items():
             # Merge defaults into config
-            if 'region' not in config_data and self.default_region:
-                config_data['region'] = self.default_region
             if 'bucket' not in config_data and self.default_bucket:
                 config_data['bucket'] = self.default_bucket
             if 'endpoint' not in config_data and self.default_endpoint:
                 config_data['endpoint'] = self.default_endpoint
             if 'file_format' not in config_data and 'format' in config_data:
                 config_data['file_format'] = config_data.pop('format')
+            if 's3_user' not in config_data and self.default_s3_user:
+                config_data['s3_user'] = self.default_s3_user
+            if 's3_password' not in config_data and self.default_s3_password:
+                config_data['s3_password'] = self.default_s3_password
 
             s3_config = S3SourceConfig.from_dict(config_data)
             self.resolved_configs[source_name] = s3_config
@@ -103,24 +110,32 @@ class S3ConfigResolver:
     def save_to_file(self, config_path: str) -> None:
         """Save current S3 mappings to a JSON configuration file."""
         data = {
-            'default_region': self.default_region,
             'default_bucket': self.default_bucket,
             'endpoint': self.default_endpoint,
             'default_format': self.default_format,
             'mappings': {}
         }
 
+        # Only include credentials if set
+        if self.default_s3_user:
+            data['s3_user'] = self.default_s3_user
+        if self.default_s3_password:
+            data['s3_password'] = self.default_s3_password
+
         for source_name, mapping in self.source_mappings.items():
             data['mappings'][source_name] = {
                 'bucket': mapping.s3_config.bucket,
                 'prefix': mapping.s3_config.prefix,
                 'format': mapping.s3_config.file_format,
-                'region': mapping.s3_config.region,
                 'table_name': mapping.table_name,
                 'columns': mapping.columns,
             }
             if mapping.s3_config.endpoint:
                 data['mappings'][source_name]['endpoint'] = mapping.s3_config.endpoint
+            if mapping.s3_config.s3_user:
+                data['mappings'][source_name]['s3_user'] = mapping.s3_config.s3_user
+            if mapping.s3_config.s3_password:
+                data['mappings'][source_name]['s3_password'] = mapping.s3_config.s3_password
 
         path = Path(config_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -315,11 +330,6 @@ class S3ConfigResolver:
             # Parse URI
             s3_config = S3SourceConfig.from_s3_uri(uri)
 
-            # Set region (use default or prompt)
-            region_prompt = f"Region [{self.default_region}]: "
-            region = input(region_prompt).strip() or self.default_region
-            s3_config.region = region
-
             # Set endpoint if needed
             if self.default_endpoint:
                 s3_config.endpoint = self.default_endpoint
@@ -327,6 +337,17 @@ class S3ConfigResolver:
                 endpoint = input("S3-compatible endpoint (leave blank for AWS): ").strip()
                 if endpoint:
                     s3_config.endpoint = endpoint
+
+            # Set S3 credentials (user/password)
+            user_prompt = f"S3 User/Access Key [{self.default_s3_user or ''}]: "
+            s3_user = input(user_prompt).strip() or self.default_s3_user
+            if s3_user:
+                s3_config.s3_user = s3_user
+
+            password_prompt = f"S3 Password/Secret Key [{self.default_s3_password and '****' or ''}]: "
+            s3_password = input(password_prompt).strip() or self.default_s3_password
+            if s3_password:
+                s3_config.s3_password = s3_password
 
             # Set file format
             format_prompt = f"File format [{self.default_format}]: "
@@ -385,9 +406,10 @@ class S3ConfigResolver:
         s3_config = S3SourceConfig(
             bucket=self.default_bucket or "data-lake",
             prefix=prefix,
-            region=self.default_region,
             endpoint=self.default_endpoint,
             file_format=self.default_format,
+            s3_user=self.default_s3_user,
+            s3_password=self.default_s3_password,
         )
 
         return S3SourceMapping(
@@ -447,5 +469,5 @@ class S3ConfigResolver:
             'skipped': len(self.skip_sources),
             'todos': len(self.todos),
             'default_bucket': self.default_bucket,
-            'default_region': self.default_region,
+            'has_credentials': bool(self.default_s3_user),
         }

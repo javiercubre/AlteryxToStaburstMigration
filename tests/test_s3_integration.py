@@ -40,7 +40,8 @@ def test_full_workflow_with_s3():
         # Create S3 resolver with config
         s3_resolver = S3ConfigResolver(
             default_bucket="test-data-lake",
-            default_region="us-east-1",
+            default_s3_user="test-user",
+            default_s3_password="test-password",
             interactive=False,
             skip_all=False
         )
@@ -185,16 +186,16 @@ def test_s3_config_file_roundtrip():
 
         # Create initial config
         original_config = {
-            "default_region": "eu-west-1",
             "default_bucket": "my-bucket",
             "endpoint": "http://minio:9000",
             "default_format": "parquet",
+            "s3_user": "test-user",
+            "s3_password": "test-password",
             "mappings": {
                 "source1.csv": {
                     "bucket": "my-bucket",
                     "prefix": "bronze/source1/",
-                    "format": "parquet",
-                    "region": "eu-west-1"
+                    "format": "parquet"
                 },
                 "source2.json": {
                     "bucket": "other-bucket",
@@ -213,9 +214,10 @@ def test_s3_config_file_roundtrip():
         resolver.load_from_file(str(config_path))
 
         # Verify loaded data
-        assert resolver.default_region == "eu-west-1"
         assert resolver.default_bucket == "my-bucket"
         assert resolver.default_endpoint == "http://minio:9000"
+        assert resolver.default_s3_user == "test-user"
+        assert resolver.default_s3_password == "test-password"
         assert len(resolver.resolved_configs) == 2
 
         # Resolve sources to create mappings
@@ -230,8 +232,8 @@ def test_s3_config_file_roundtrip():
         with open(output_path, 'r') as f:
             saved_config = json.load(f)
 
-        assert saved_config['default_region'] == original_config['default_region']
         assert saved_config['default_bucket'] == original_config['default_bucket']
+        assert saved_config['s3_user'] == original_config['s3_user']
         assert len(saved_config['mappings']) == 2
 
     print("[PASS] S3 config file roundtrip")
@@ -251,8 +253,7 @@ def test_s3_bronze_model_generation():
         s3_config = S3SourceConfig(
             bucket="data-lake",
             prefix="raw/customers/",
-            file_format="parquet",
-            region="us-east-1"
+            file_format="parquet"
         )
 
         mapping = S3SourceMapping(

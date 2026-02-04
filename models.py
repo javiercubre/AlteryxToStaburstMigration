@@ -231,14 +231,16 @@ class S3SourceConfig:
     """Configuration for an S3-compatible bucket source.
 
     Supports AWS S3, MinIO, and other S3-compatible storage services.
+    Uses user/password authentication for S3 connections.
     """
     bucket: str
     prefix: str  # folder path in bucket (without leading slash)
-    region: str = "us-east-1"
     endpoint: Optional[str] = None  # For S3-compatible services (MinIO, etc.)
     file_format: str = "parquet"  # parquet, csv, json
     file_pattern: Optional[str] = None  # e.g., "*.parquet"
     credentials_profile: Optional[str] = None  # AWS credentials profile name
+    s3_user: Optional[str] = None  # S3 access key / username
+    s3_password: Optional[str] = None  # S3 secret key / password
 
     def get_s3_uri(self) -> str:
         """Get the full S3 URI (s3a:// for Trino compatibility)."""
@@ -252,15 +254,20 @@ class S3SourceConfig:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
-        return {
+        result = {
             'bucket': self.bucket,
             'prefix': self.prefix,
-            'region': self.region,
             'endpoint': self.endpoint,
             'file_format': self.file_format,
             'file_pattern': self.file_pattern,
             'credentials_profile': self.credentials_profile,
         }
+        # Only include credentials if set (avoid storing None in config)
+        if self.s3_user:
+            result['s3_user'] = self.s3_user
+        if self.s3_password:
+            result['s3_password'] = self.s3_password
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'S3SourceConfig':
@@ -268,11 +275,12 @@ class S3SourceConfig:
         return cls(
             bucket=data['bucket'],
             prefix=data.get('prefix', ''),
-            region=data.get('region', 'us-east-1'),
             endpoint=data.get('endpoint'),
             file_format=data.get('file_format', 'parquet'),
             file_pattern=data.get('file_pattern'),
             credentials_profile=data.get('credentials_profile'),
+            s3_user=data.get('s3_user'),
+            s3_password=data.get('s3_password'),
         )
 
     @classmethod

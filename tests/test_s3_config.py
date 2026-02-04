@@ -22,8 +22,9 @@ def test_s3_source_config_basic():
     )
     assert config.bucket == "my-bucket"
     assert config.prefix == "data/customers/"
-    assert config.region == "us-east-1"  # default
     assert config.file_format == "parquet"  # default
+    assert config.s3_user is None  # default
+    assert config.s3_password is None  # default
     print("[PASS] S3SourceConfig basic creation")
 
 
@@ -63,24 +64,27 @@ def test_s3_source_config_serialization():
     config = S3SourceConfig(
         bucket="my-bucket",
         prefix="data/",
-        region="eu-west-1",
         endpoint="http://minio.local:9000",
         file_format="csv",
-        file_pattern="*.csv"
+        file_pattern="*.csv",
+        s3_user="test-user",
+        s3_password="test-password"
     )
 
     # To dict
     data = config.to_dict()
     assert data['bucket'] == "my-bucket"
-    assert data['region'] == "eu-west-1"
     assert data['endpoint'] == "http://minio.local:9000"
+    assert data['s3_user'] == "test-user"
+    assert data['s3_password'] == "test-password"
 
     # From dict
     restored = S3SourceConfig.from_dict(data)
     assert restored.bucket == config.bucket
-    assert restored.region == config.region
     assert restored.endpoint == config.endpoint
     assert restored.file_format == config.file_format
+    assert restored.s3_user == config.s3_user
+    assert restored.s3_password == config.s3_password
 
     print("[PASS] S3SourceConfig serialization")
 
@@ -113,13 +117,15 @@ def test_s3_config_resolver_defaults():
     """Test S3ConfigResolver with defaults."""
     resolver = S3ConfigResolver(
         default_bucket="my-data-lake",
-        default_region="us-west-2",
+        default_s3_user="test-user",
+        default_s3_password="test-password",
         interactive=False,
         skip_all=True
     )
 
     assert resolver.default_bucket == "my-data-lake"
-    assert resolver.default_region == "us-west-2"
+    assert resolver.default_s3_user == "test-user"
+    assert resolver.default_s3_password == "test-password"
     assert resolver.interactive is False
 
     print("[PASS] S3ConfigResolver defaults")
@@ -147,9 +153,10 @@ def test_s3_config_resolver_derive_table_name():
 def test_s3_config_resolver_load_from_file():
     """Test loading config from JSON file."""
     config_data = {
-        "default_region": "eu-central-1",
         "default_bucket": "test-bucket",
         "endpoint": "http://localhost:9000",
+        "s3_user": "test-user",
+        "s3_password": "test-password",
         "mappings": {
             "customers.csv": {
                 "bucket": "test-bucket",
@@ -160,7 +167,7 @@ def test_s3_config_resolver_load_from_file():
                 "bucket": "test-bucket",
                 "prefix": "bronze/orders/",
                 "format": "csv",
-                "region": "us-east-1"
+                "s3_user": "other-user"
             }
         }
     }
@@ -173,9 +180,10 @@ def test_s3_config_resolver_load_from_file():
         resolver = S3ConfigResolver(interactive=False)
         resolver.load_from_file(config_path)
 
-        assert resolver.default_region == "eu-central-1"
         assert resolver.default_bucket == "test-bucket"
         assert resolver.default_endpoint == "http://localhost:9000"
+        assert resolver.default_s3_user == "test-user"
+        assert resolver.default_s3_password == "test-password"
         assert len(resolver.resolved_configs) == 2
         assert "customers.csv" in resolver.resolved_configs
         assert "orders.csv" in resolver.resolved_configs
@@ -185,9 +193,10 @@ def test_s3_config_resolver_load_from_file():
         assert customers_config.bucket == "test-bucket"
         assert customers_config.prefix == "bronze/customers/"
         assert customers_config.file_format == "parquet"
+        assert customers_config.s3_user == "test-user"  # inherited from default
 
         orders_config = resolver.resolved_configs["orders.csv"]
-        assert orders_config.region == "us-east-1"  # Override
+        assert orders_config.s3_user == "other-user"  # Override
 
         print("[PASS] S3ConfigResolver load from file")
     finally:
@@ -198,7 +207,8 @@ def test_s3_config_resolver_save_to_file():
     """Test saving config to JSON file."""
     resolver = S3ConfigResolver(
         default_bucket="my-bucket",
-        default_region="us-west-2",
+        default_s3_user="test-user",
+        default_s3_password="test-password",
         interactive=False
     )
 
@@ -223,7 +233,8 @@ def test_s3_config_resolver_save_to_file():
             saved_data = json.load(f)
 
         assert saved_data['default_bucket'] == "my-bucket"
-        assert saved_data['default_region'] == "us-west-2"
+        assert saved_data['s3_user'] == "test-user"
+        assert saved_data['s3_password'] == "test-password"
         assert "users.csv" in saved_data['mappings']
         assert saved_data['mappings']['users.csv']['prefix'] == "bronze/users/"
 
@@ -292,7 +303,7 @@ def test_s3_config_resolver_summary():
     """Test summary generation."""
     resolver = S3ConfigResolver(
         default_bucket="my-bucket",
-        default_region="eu-west-1",
+        default_s3_user="test-user",
         interactive=False
     )
 
@@ -316,7 +327,7 @@ def test_s3_config_resolver_summary():
     assert summary['skipped'] == 1
     assert summary['todos'] == 1
     assert summary['default_bucket'] == "my-bucket"
-    assert summary['default_region'] == "eu-west-1"
+    assert summary['has_credentials'] is True
 
     print("[PASS] S3ConfigResolver summary")
 
