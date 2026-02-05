@@ -6,6 +6,7 @@ Target Platform: Starburst (Trino-based)
 
 LOW-04 fix: Replaced print() with logging module.
 """
+import re
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Set, Tuple
 from datetime import datetime
@@ -777,7 +778,6 @@ class DocumentationGenerator:
 
     def _sanitize_name(self, name: str) -> str:
         """Sanitize a name for use as a DBT model name."""
-        import re
         # Remove special characters, replace spaces with underscores
         sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', name)
         # Remove consecutive underscores
@@ -1218,5 +1218,10 @@ class DocumentationGenerator:
 
     def _write_file(self, path: Path, content: str) -> None:
         """Write content to a file."""
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(content)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(content)
+        except OSError as e:
+            logger.error(f"Failed to write file {path}: {e}")
+            raise

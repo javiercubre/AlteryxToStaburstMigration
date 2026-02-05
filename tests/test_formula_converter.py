@@ -220,6 +220,41 @@ class TestCoalesce:
         assert 'COALESCE' in result
 
 
+class TestStringLiteralProtection:
+    """Tests that string literals are not corrupted by operator replacement."""
+
+    def test_exclamation_in_string_literal(self, converter):
+        """Test that ! inside string literals is not replaced with NOT."""
+        result = converter.convert("[Field] = 'Hello!'")
+        assert "'Hello!'" in result
+        assert "NOT" not in result
+
+    def test_pipe_in_string_literal(self, converter):
+        """Test that || inside string literals is not replaced with OR."""
+        result = converter.convert("[Field] = 'a||b'")
+        assert "'a||b'" in result
+        assert " OR " not in result
+
+    def test_not_equals_in_string_literal(self, converter):
+        """Test that != inside string literals is not replaced with <>."""
+        result = converter.convert("[Field] = 'x!=y'")
+        assert "'x!=y'" in result
+
+    def test_operators_outside_strings_still_converted(self, converter):
+        """Test that operators outside string literals are still converted."""
+        result = converter.convert("[A] != 'test' && [B] = 'ok'")
+        assert '<>' in result
+        assert ' AND ' in result
+        assert "'test'" in result
+        assert "'ok'" in result
+
+    def test_not_operator_before_function(self, converter):
+        """Test that ! before a function call is converted to NOT."""
+        result = converter.convert('!IsNull([Field])')
+        assert 'NOT' in result
+        assert 'IS NULL' in result
+
+
 class TestComplexExpressions:
     """Tests for complex nested expressions."""
 
