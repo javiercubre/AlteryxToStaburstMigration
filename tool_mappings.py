@@ -45,7 +45,7 @@ PLUGIN_CATEGORY_MAP = {
     "AlteryxBasePluginsGui.RecordID.RecordID": ToolCategory.PREPARATION,
     "AlteryxBasePluginsGui.AutoField.AutoField": ToolCategory.PREPARATION,
     "AlteryxBasePluginsGui.MultiRowFormula.MultiRowFormula": ToolCategory.PREPARATION,
-    "AlteryxBasePluginsGui.FindReplace.FindReplace": ToolCategory.PREPARATION,
+    # Note: FindReplace is categorized as PREPARATION (lookup/replace values in a field)
     "AlteryxBasePluginsGui.Imputation.Imputation": ToolCategory.PREPARATION,
     "AlteryxBasePluginsGui.RandomSample.Random%Sample": ToolCategory.PREPARATION,
     "AlteryxBasePluginsGui.SelectRecords.SelectRecords": ToolCategory.PREPARATION,
@@ -56,7 +56,7 @@ PLUGIN_CATEGORY_MAP = {
     "AlteryxBasePluginsGui.Union.Union": ToolCategory.JOIN,
     "AlteryxBasePluginsGui.AppendFields.AppendFields": ToolCategory.JOIN,
     "AlteryxBasePluginsGui.JoinMultiple.JoinMultiple": ToolCategory.JOIN,
-    "AlteryxBasePluginsGui.FindReplace.FindReplace": ToolCategory.JOIN,
+    "AlteryxBasePluginsGui.FindReplace.FindReplace": ToolCategory.PREPARATION,
     "AlteryxBasePluginsGui.MakeGroup.MakeGroup": ToolCategory.JOIN,
     "AlteryxSpatialPluginsGui.SpatialMatch.SpatialMatch": ToolCategory.JOIN,
     "AlteryxBasePluginsGui.Fuzzy.Fuzzy": ToolCategory.JOIN,
@@ -430,7 +430,7 @@ AGGREGATION_MAP = {
     "Avg": "AVG",
     "First": "FIRST_VALUE",
     "Last": "LAST_VALUE",
-    "Concat": "STRING_AGG",  # Or LISTAGG in some DBs
+    "Concat": "LISTAGG",  # Trino uses LISTAGG for string aggregation
     "CountNonNull": "COUNT",
     "CountNull": "SUM(CASE WHEN {field} IS NULL THEN 1 ELSE 0 END)",
     "StdDev": "STDDEV",

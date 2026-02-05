@@ -435,7 +435,6 @@ class AlteryxParser:
             config['connection'] = node.connection_string
             # MED-10 fix: Parse connection string
             self._parse_connection_string(node.connection_string, node, config)
-            config['connection'] = node.connection_string
 
         # Table name
         table_elem = config_elem.find('.//Table')

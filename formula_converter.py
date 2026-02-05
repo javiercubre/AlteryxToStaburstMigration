@@ -12,6 +12,7 @@ from typing import Dict, Tuple, Optional, Callable
 
 # Configuration constants
 MAX_FUNCTION_CONVERSION_ITERATIONS = 100  # Prevent infinite loops in nested function conversion
+MAX_EXPRESSION_LENGTH = 10000  # Prevent ReDoS on extremely long expressions
 
 
 # Alteryx function to Trino SQL mapping
@@ -253,18 +254,34 @@ class FormulaConverter:
         if not expr:
             return "NULL"
 
+        if len(expr) > MAX_EXPRESSION_LENGTH:
+            return f"/* Expression too long ({len(expr)} chars) - manual conversion required */ NULL"
+
         self._conversion_notes = []
         sql = expr.strip()
 
         # Replace Alteryx field references [FieldName] with "FieldName"
         sql = re.sub(r'\[([^\]]+)\]', r'"\1"', sql)
 
-        # Replace operators
+        # Protect string literals from operator replacement by temporarily
+        # extracting them. This prevents "Hello!" from becoming "Hello NOT ".
+        string_literals = []
+        def _extract_literal(match):
+            string_literals.append(match.group(0))
+            return f"\x00STR{len(string_literals) - 1}\x00"
+        sql = re.sub(r"'[^']*'", _extract_literal, sql)
+        sql = re.sub(r'"[^"]*"', _extract_literal, sql)
+
+        # Replace operators (safe now that string literals are extracted)
+        sql = sql.replace('!=', '<>')
         sql = sql.replace('==', '=')
         sql = sql.replace('&&', ' AND ')
         sql = sql.replace('||', ' OR ')
-        sql = sql.replace('!=', '<>')
-        sql = sql.replace('!', ' NOT ')
+        sql = re.sub(r'!(?!=)', ' NOT ', sql)
+
+        # Restore string literals
+        for i, literal in enumerate(string_literals):
+            sql = sql.replace(f"\x00STR{i}\x00", literal)
 
         # Convert functions
         sql = self._convert_all_functions(sql)

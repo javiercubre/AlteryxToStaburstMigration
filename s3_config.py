@@ -76,6 +76,15 @@ class S3ConfigResolver:
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
+        # Validate config structure
+        if not isinstance(data, dict):
+            raise ValueError(f"S3 config must be a JSON object, got {type(data).__name__}")
+        if 'mappings' in data and not isinstance(data.get('mappings'), dict):
+            raise ValueError("'mappings' in S3 config must be a dictionary")
+        for key in ['default_bucket', 'endpoint', 's3_user', 's3_password', 'default_format']:
+            if key in data and data[key] is not None and not isinstance(data[key], str):
+                raise ValueError(f"'{key}' in S3 config must be a string, got {type(data[key]).__name__}")
+
         # Load defaults
         if 'default_bucket' in data:
             self.default_bucket = data['default_bucket']

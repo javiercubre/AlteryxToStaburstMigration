@@ -12,7 +12,7 @@ import re
 import csv
 import json
 from pathlib import Path
-from typing import List, Dict, Set, Optional, Tuple
+from typing import Any, List, Dict, Set, Optional, Tuple
 from datetime import datetime
 from dataclasses import dataclass, field
 
@@ -1213,6 +1213,7 @@ class DBTGenerator:
             is_last = (i == len(upstream) - 1)
             keyword = "with " if i == 0 else ""
 
+            # Upstream CTEs always need trailing commas since transformation CTEs follow
             if up_columns:
                 col_list = self._format_column_list(up_columns)
                 content.extend([
@@ -1222,7 +1223,7 @@ class DBTGenerator:
                     f"        {col_list}",
                     f"    from {{{{ ref('{up_model}') }}}}",
                     "",
-                    ")," if not is_last else "),",
+                    "),",
                     "",
                 ])
             else:
@@ -1233,7 +1234,7 @@ class DBTGenerator:
                     f"    {TODO_SPECIFY_COLUMNS}",
                     f"    from {{{{ ref('{up_model}') }}}}",
                     "",
-                    ")," if not is_last else "),",
+                    "),",
                     "",
                 ])
                 self._add_todo(
@@ -1442,7 +1443,7 @@ class DBTGenerator:
             - Is a numeric literal
         """
         if not col or not isinstance(col, str):
-            return col
+            return col or ""
 
         col = col.strip()
 
@@ -2075,7 +2076,7 @@ class DBTGenerator:
 
     def _extract_node_parameter(self, node: AlteryxNode,
                                 param_name: str,
-                                workflow: AlteryxWorkflow) -> any:
+                                workflow: AlteryxWorkflow) -> Any:
         """Extract a parameter value from an Alteryx node."""
         if param_name == "expression":
             return self._convert_expression(node.expression or "1=1")
@@ -2176,7 +2177,7 @@ class DBTGenerator:
 {macro_call}"""
         return macro_call
 
-    def _format_macro_param_value(self, value: any) -> str:
+    def _format_macro_param_value(self, value: Any) -> str:
         """Format a parameter value for use in a Jinja2 macro call."""
         if value is None:
             return "none"
@@ -2947,9 +2948,13 @@ tests:
 
     def _write_file(self, path: Path, content: str) -> None:
         """Write content to a file, creating parent directories if needed."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(content)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(content)
+        except OSError as e:
+            logger.error(f"Failed to write file {path}: {e}")
+            raise
 
     # =========================================================================
     # S3 Source Generation (V2)
