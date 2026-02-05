@@ -21,6 +21,8 @@ Facilitates migration from Alteryx ETL to **Starburst (Trino-based)** ELT archit
 - **Macro Handling**: Recursively parses macros with interactive prompts for missing ones
 - **Markdown Documentation**: Generates comprehensive docs with Mermaid diagrams
 - **DBT Scaffolding**: Creates starter DBT models organized by medallion layers
+- **Column Detection**: Automatic column header extraction from CSV, Excel, JSON, and Parquet files
+- **Structured Logging**: Configurable logging with verbose, quiet, and file output modes
 
 ### Macro-First Architecture
 - **23 Reusable DBT Macros**: Pre-built macros covering 85%+ of Alteryx tools
@@ -47,7 +49,12 @@ Facilitates migration from Alteryx ETL to **Starburst (Trino-based)** ELT archit
 
 ## Installation
 
-No external dependencies required - uses only Python standard library (Python 3.7+).
+No external dependencies required for core functionality - uses only Python standard library (Python 3.7+).
+
+Optional dependencies for enhanced column detection:
+- `openpyxl` - Excel .xlsx file support
+- `xlrd` - Excel .xls file support
+- `pyarrow` - Parquet file support
 
 ```bash
 # Clone the repository
@@ -56,6 +63,9 @@ cd AlteryxToStarburstMigration
 
 # Run directly
 python main.py --help
+
+# Optional: install extras for column detection
+pip install openpyxl pyarrow
 ```
 
 ## Usage
@@ -130,6 +140,22 @@ python main.py analyze . --macro-dir ./shared_macros --macro-dir ./team_macros
 python main.py analyze . --non-interactive
 ```
 
+### Logging Options
+
+```bash
+# Verbose output (debug-level logging)
+python main.py analyze . --verbose
+
+# Quiet mode (warnings and errors only)
+python main.py analyze . --quiet
+
+# Log to file
+python main.py analyze . --log-file ./migration.log
+
+# Combine: quiet console + verbose file logging
+python main.py analyze . --quiet --log-file ./migration.log
+```
+
 ### Full Example
 
 ```bash
@@ -139,8 +165,10 @@ python main.py analyze ./workflows \
     --generate-dbt ./dbt_project \
     --macro-dir ./macros \
     --s3-config ./s3_mappings.json \
+    --default-schema raw \
     --non-interactive \
-    --verbose
+    --verbose \
+    --log-file ./migration.log
 ```
 
 ## CLI Arguments
@@ -153,9 +181,13 @@ python main.py analyze ./workflows \
 | `--recursive`, `-r` | Recursively scan directories |
 | `--output`, `-o` | Output directory for documentation |
 | `--generate-dbt` | Generate DBT project scaffolding |
-| `--macro-dir` | Additional directories to search for macros |
+| `--macro-dir` | Additional directories to search for macros (repeatable) |
 | `--non-interactive` | Skip interactive prompts |
-| `--verbose`, `-v` | Verbose output |
+| `--verbose`, `-v` | Enable verbose/debug output |
+| `--quiet`, `-q` | Suppress info messages, only show warnings and errors |
+| `--log-file` | Write logs to specified file (in addition to console) |
+| `--default-schema` | Default schema name for sources (default: `raw`) |
+| `--validate` | Validate generated SQL by running `dbt compile` |
 | `--s3-bucket` | Default S3 bucket for all sources |
 | `--s3-config` | JSON file with S3 source mappings |
 | `--s3-endpoint` | S3 endpoint URL (for S3-compatible services) |
@@ -167,12 +199,15 @@ python main.py analyze ./workflows \
 | Argument | Description |
 |----------|-------------|
 | `-o`, `--output` | Output file path (default: `s3_mappings.json`) |
-| `--scan` | Workflow paths to scan for source discovery |
+| `--scan` | Workflow paths to scan for source discovery (repeatable) |
 | `--bucket` | Pre-set default S3 bucket name |
 | `--extend` | Extend existing config file instead of creating new |
+| `--format` | Pre-set default file format: `parquet`, `csv`, `json`, `orc`, `avro` (default: `parquet`) |
+| `--endpoint` | Pre-set S3-compatible endpoint URL |
 | `--s3-user` | Pre-set S3 access key / username |
 | `--s3-password` | Pre-set S3 secret key / password |
-| `--verbose`, `-v` | Verbose output |
+| `--verbose`, `-v` | Enable verbose/debug output |
+| `--quiet`, `-q` | Suppress info messages, only show warnings and errors |
 
 ## S3 Configuration File
 
@@ -343,19 +378,24 @@ AlteryxToStarburstMigration/
 ├── formula_converter.py          # Alteryx formula → Trino SQL conversion
 ├── quality_validator.py          # Parallel validation tests
 ├── models.py                     # Data classes & enums
+├── column_detector.py            # Column header detection (CSV, Excel, JSON, Parquet)
+├── logging_config.py             # Structured logging configuration
 ├── s3_config.py                  # S3 source configuration
 ├── s3_mappings_generator.py      # Interactive S3 config wizard
 ├── trino_s3_templates.py         # Trino external table templates
 ├── dbt_macros/                   # 23 reusable DBT macros
 ├── tests/                        # Test suite
+│   ├── conftest.py               # Shared test fixtures
 │   ├── test_source_columns.py
 │   ├── test_formula_converter.py
 │   ├── test_s3_config.py
 │   ├── test_s3_integration.py
-│   └── test_s3_mappings_generator.py
+│   ├── test_s3_mappings_generator.py
+│   └── test_trino_s3_templates.py
 └── samples/                      # Sample workflows and configs
     ├── *.yxmd
     ├── s3_config.json
+    ├── s3_mappings.json
     └── macros/
 ```
 
@@ -368,6 +408,7 @@ python tests/test_formula_converter.py
 python tests/test_s3_config.py
 python tests/test_s3_integration.py
 python tests/test_s3_mappings_generator.py
+python tests/test_trino_s3_templates.py
 ```
 
 ## Example
