@@ -1574,6 +1574,21 @@ class DBTGenerator:
                     f"        description: \"{source_info.description}\"",
                 ])
 
+                # Derive external_location and file_format from source path
+                if source_info.source_path:
+                    content.append(f"        external_location: \"{source_info.source_path}\"")
+                    ext = source_info.source_path.rsplit('.', 1)[-1].lower() if '.' in source_info.source_path else ""
+                    format_map = {
+                        'csv': 'csv', 'tsv': 'csv', 'txt': 'csv',
+                        'parquet': 'parquet', 'pqt': 'parquet',
+                        'json': 'json', 'jsonl': 'json',
+                        'orc': 'orc', 'avro': 'avro',
+                        'xlsx': 'xlsx', 'xls': 'xlsx',
+                        'yxdb': 'yxdb',
+                    }
+                    file_format = format_map.get(ext, ext if ext else 'unknown')
+                    content.append(f"        file_format: \"{file_format}\"")
+
                 # Add columns if we have them
                 if source_info.columns:
                     content.append("        columns:")
@@ -1599,13 +1614,15 @@ class DBTGenerator:
 
             for table_name, source_info in sorted(self.s3_sources.items()):
                 s3_mapping = source_info.s3_mapping
+                s3_uri = s3_mapping.s3_config.get_s3_uri()
+                file_format = s3_mapping.s3_config.file_format
                 content.extend([
                     f"      - name: {table_name}",
                     f"        description: \"{source_info.description}\"",
+                    f"        external_location: \"{s3_uri}\"",
+                    f"        file_format: \"{file_format}\"",
                     "        meta:",
-                    f"          external_location: \"{s3_mapping.s3_config.get_s3_uri()}\"",
-                    f"          file_format: {s3_mapping.s3_config.file_format}",
-                    "          source_type: s3",
+                    f"          source_type: s3",
                 ])
 
                 # Add columns if we have them

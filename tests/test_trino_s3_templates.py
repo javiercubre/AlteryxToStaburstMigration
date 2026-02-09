@@ -145,7 +145,7 @@ def test_generate_sources_yml_entry():
     assert 'name: customers' in yml
     assert 'name: orders' in yml
     assert 'external_location:' in yml
-    assert 'file_format: parquet' in yml
+    assert 'file_format: "parquet"' in yml
     assert 'columns:' in yml
     assert 'name: id' in yml
 
