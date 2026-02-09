@@ -56,11 +56,41 @@ class SourceInfo:
     schema: str
     table: str
     columns: List[str] = field(default_factory=list)
+    column_types: Dict[str, str] = field(default_factory=dict)  # column_name -> Trino SQL type
     description: str = ""
     source_path: str = ""
     # S3 source info (V2)
     s3_mapping: Optional[S3SourceMapping] = None
     is_s3_source: bool = False
+
+
+# Mapping from Alteryx data types to Trino SQL types
+ALTERYX_TO_TRINO_TYPE_MAP = {
+    # Boolean
+    'bool': 'BOOLEAN',
+    'boolean': 'BOOLEAN',
+    # Integer types
+    'byte': 'TINYINT',
+    'int16': 'SMALLINT',
+    'int32': 'INTEGER',
+    'int64': 'BIGINT',
+    # Decimal/Float types
+    'fixeddecimal': 'DECIMAL',
+    'float': 'REAL',
+    'double': 'DOUBLE',
+    # String types
+    'string': 'VARCHAR',
+    'wstring': 'VARCHAR',
+    'v_string': 'VARCHAR',
+    'v_wstring': 'VARCHAR',
+    # Date/Time types
+    'date': 'DATE',
+    'time': 'TIME',
+    'datetime': 'TIMESTAMP',
+    # Binary types
+    'blob': 'VARBINARY',
+    'spatialobj': 'VARCHAR',
+}
 
 
 @dataclass
@@ -782,10 +812,21 @@ class DBTGenerator:
                 if not columns:
                     columns = self._try_read_source_columns(node, schema, table)
 
+                # Extract column type information from node configuration
+                column_types = self._extract_column_types_from_node(node)
+
+                # Also gather types from downstream nodes in the workflow
+                for downstream in workflow.get_downstream_nodes(node.tool_id):
+                    downstream_types = self._extract_column_types_from_node(downstream)
+                    for col, dtype in downstream_types.items():
+                        if col not in column_types:
+                            column_types[col] = dtype
+
                 source_info = SourceInfo(
                     schema=schema,
                     table=table,
                     columns=columns,
+                    column_types=column_types,
                     description=node.annotation or node.get_display_name(),
                     source_path=node.source_path or node.table_name or "",
                 )
@@ -796,6 +837,10 @@ class DBTGenerator:
                     # Combine columns, removing duplicates
                     all_cols = list(dict.fromkeys(existing.columns + columns))
                     existing.columns = all_cols
+                    # Merge column types
+                    for col, dtype in column_types.items():
+                        if col not in existing.column_types:
+                            existing.column_types[col] = dtype
                 else:
                     self.sources[schema][table] = source_info
 
@@ -986,7 +1031,44 @@ class DBTGenerator:
             sql_cols = self._extract_columns_from_sql(node.sql_query)
             columns.extend([c for c in sql_cols if c not in columns])
 
+        # From field_types (RecordInfo or typed SelectField elements)
+        field_types = node.configuration.get('field_types', {})
+        if field_types:
+            for col in field_types:
+                if col not in columns:
+                    columns.append(col)
+
         return columns
+
+    def _map_alteryx_type_to_trino(self, alteryx_type: str) -> str:
+        """Map an Alteryx data type to a Trino SQL type."""
+        normalized = alteryx_type.lower().strip()
+        return ALTERYX_TO_TRINO_TYPE_MAP.get(normalized, 'VARCHAR')
+
+    def _extract_column_types_from_node(self, node: AlteryxNode) -> Dict[str, str]:
+        """Extract column name to Trino data type mapping from a node's configuration.
+
+        Looks for type information in:
+        1. RecordInfo/Field elements (stored as config['field_types'] by parser)
+        2. SelectField type attributes (stored as config['field_types'] by parser)
+        3. FormulaField type attributes (stored in config['formulas'])
+        """
+        column_types: Dict[str, str] = {}
+
+        # From field_types parsed by alteryx_parser (RecordInfo or SelectField)
+        field_types = node.configuration.get('field_types', {})
+        for col_name, alteryx_type in field_types.items():
+            column_types[col_name] = self._map_alteryx_type_to_trino(alteryx_type)
+
+        # From formula fields which have explicit type declarations
+        formulas = node.configuration.get('formulas', [])
+        for f in formulas:
+            field_name = f.get('field', '')
+            field_type = f.get('type', '')
+            if field_name and field_type:
+                column_types[field_name] = self._map_alteryx_type_to_trino(field_type)
+
+        return column_types
 
     def _extract_columns_from_sql(self, sql: str) -> List[str]:
         """Extract column names from a SQL SELECT statement."""
@@ -1500,6 +1582,10 @@ class DBTGenerator:
                             f"          - name: \"{col}\"",
                             f"            description: \"Column {col} from source\"",
                         ])
+                        if col in source_info.column_types:
+                            content.append(
+                                f"            data_type: \"{source_info.column_types[col]}\""
+                            )
 
         # S3 sources (V2)
         if self.s3_sources:
@@ -1530,6 +1616,10 @@ class DBTGenerator:
                             f"          - name: \"{col}\"",
                             f"            description: \"Column {col} from {s3_mapping.alteryx_source_name}\"",
                         ])
+                        if col in source_info.column_types:
+                            content.append(
+                                f"            data_type: \"{source_info.column_types[col]}\""
+                            )
 
         self._write_file(
             self.output_dir / "models" / "bronze" / "_sources.yml",

@@ -420,6 +420,17 @@ class AlteryxParser:
             node.sql_query = query_alt.text
             config['sql'] = node.sql_query
 
+        # Parse RecordInfo/Field elements for column type metadata
+        field_types = {}
+        for record_info in config_elem.findall('.//RecordInfo'):
+            for field_elem in record_info.findall('Field'):
+                fname = field_elem.get('name', '')
+                ftype = field_elem.get('type', '')
+                if fname and ftype:
+                    field_types[fname] = ftype
+        if field_types:
+            config['field_types'] = field_types
+
     def _parse_output_config(self, config_elem: ET.Element, node: AlteryxNode, config: Dict):
         """Parse output tool configuration."""
         # File path
@@ -542,17 +553,24 @@ class AlteryxParser:
         selected_fields = []
         deselected_fields = []
         all_fields = []
+        field_types = {}
 
         for field in config_elem.findall('.//SelectField'):
             field_name = field.get('field', '')
             selected = field.get('selected', 'True')
             rename = field.get('rename', '')
+            field_type = field.get('type', '')
 
             if not field_name:
                 continue
 
             # Track all fields for column lineage
             all_fields.append(field_name)
+
+            # Track field types if available
+            if field_type:
+                effective_name = rename if rename else field_name
+                field_types[effective_name] = field_type
 
             if selected == 'True':
                 if rename:
@@ -567,6 +585,8 @@ class AlteryxParser:
         config['selected_fields'] = selected_fields
         config['deselected_fields'] = deselected_fields
         config['all_fields'] = all_fields
+        if field_types:
+            config['field_types'] = field_types
 
     def _parse_sort_config(self, config_elem: ET.Element, node: AlteryxNode, config: Dict):
         """Parse sort tool configuration."""
