@@ -342,7 +342,7 @@ def test_s3_sources_yml_generation():
     assert "name: customers" in yaml_content
     assert "name: orders" in yaml_content
     assert "external_location:" in yaml_content
-    assert "file_format: parquet" in yaml_content
+    assert 'file_format: "parquet"' in yaml_content
     assert "source_type: s3" in yaml_content
 
     print("[PASS] S3 sources.yml generation")

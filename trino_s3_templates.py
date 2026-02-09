@@ -84,9 +84,9 @@ SOURCES_YML_S3_TEMPLATE = """  - name: {source_name}
 
 TABLE_YML_S3_TEMPLATE = """      - name: {table_name}
         description: "{description}"
+        external_location: "{s3_location}"
+        file_format: "{file_format}"
         meta:
-          external_location: "{s3_location}"
-          file_format: {file_format}
           source_type: s3
 {columns_yaml}
 """
