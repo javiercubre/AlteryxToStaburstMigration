@@ -822,6 +822,16 @@ class DBTGenerator:
                         if col not in column_types:
                             column_types[col] = dtype
 
+                # If we still have columns without types, try to infer from the source file
+                columns_missing_types = [c for c in columns if c not in column_types]
+                if columns_missing_types:
+                    source_path = node.source_path or node.table_name or ""
+                    if source_path:
+                        inferred_types = self._infer_file_column_types(source_path)
+                        for col, dtype in inferred_types.items():
+                            if col not in column_types:
+                                column_types[col] = dtype
+
                 source_info = SourceInfo(
                     schema=schema,
                     table=table,
@@ -979,6 +989,14 @@ class DBTGenerator:
         MED-09 fix: Improved error handling - adds TODO when pyarrow missing.
         """
         return self._column_detector.read_parquet_columns(file_path)
+
+    def _infer_file_column_types(self, file_path: str) -> Dict[str, str]:
+        """Infer column data types from a data file by sampling up to 100 rows.
+
+        Delegates to ColumnDetector module. Returns a dict mapping column
+        names to Trino SQL type strings. Null-only columns default to VARCHAR.
+        """
+        return self._column_detector.infer_column_types(file_path)
 
     def _extract_columns_from_node(self, node: AlteryxNode) -> List[str]:
         """Extract column names from a node's configuration."""
