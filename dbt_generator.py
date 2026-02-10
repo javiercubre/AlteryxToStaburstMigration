@@ -825,7 +825,12 @@ class DBTGenerator:
                 # If we still have columns without types, try to infer from the source file
                 columns_missing_types = [c for c in columns if c not in column_types]
                 if columns_missing_types:
-                    source_path = node.source_path or node.table_name or ""
+                    source_key = f"{schema}.{table}"
+                    # Prefer the resolved file path (from successful file read or
+                    # interactive prompt) over the original Alteryx path which may
+                    # not exist on this system (e.g. Windows UNC paths on Linux).
+                    resolved_path = self._resolved_source_files.get(source_key, "")
+                    source_path = resolved_path or node.source_path or node.table_name or ""
                     if source_path:
                         inferred_types = self._infer_file_column_types(source_path)
                         for col, dtype in inferred_types.items():
@@ -864,6 +869,7 @@ class DBTGenerator:
         if source_path:
             columns = self._read_file_columns(source_path)
             if columns:
+                self._resolved_source_files[source_key] = source_path
                 return columns
 
         # If interactive mode, prompt user for the file location

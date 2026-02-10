@@ -104,6 +104,122 @@ class TestFileColumnDispatcher:
         assert len(json_cols) == 6
 
 
+class TestDataTypeInference:
+    """Tests for data_type attribute in _sources.yml generation."""
+
+    def _make_workflow_with_source(self, source_path, table_name=None):
+        """Helper to create a minimal workflow with one Input source node."""
+        from models import AlteryxNode, AlteryxWorkflow, WorkflowMetadata, ToolCategory
+        node = AlteryxNode(
+            tool_id=1,
+            tool_type="AlteryxBasePluginsGui.DbFileInput.DbFileInput",
+            plugin_name="Input Data",
+            category=ToolCategory.INPUT,
+            source_path=source_path,
+            table_name=table_name,
+        )
+        workflow = AlteryxWorkflow(
+            metadata=WorkflowMetadata(name="test_wf", file_path="test.yxmd"),
+            nodes=[node],
+            connections=[],
+            sources=[node],
+        )
+        return workflow
+
+    def test_data_type_from_real_csv(self, test_data_dir):
+        """Test that data_type attributes are added when a real CSV exists."""
+        csv_path = os.path.join(test_data_dir, 'sample_customers.csv')
+        workflow = self._make_workflow_with_source(csv_path)
+
+        output_dir = tempfile.mkdtemp()
+        gen = DBTGenerator(output_dir, interactive=False)
+        gen._collect_sources([workflow])
+
+        # Verify column_types were inferred for the source
+        assert len(gen.sources) > 0
+        for schema, tables in gen.sources.items():
+            for table_name, source_info in tables.items():
+                assert len(source_info.columns) > 0, "Columns should be detected from CSV"
+                assert len(source_info.column_types) > 0, "Column types should be inferred from CSV"
+                for col in source_info.columns:
+                    assert col in source_info.column_types, (
+                        f"Column '{col}' missing data_type in column_types"
+                    )
+
+    def test_data_type_written_to_sources_yml(self, test_data_dir):
+        """Test that data_type attributes appear in the generated _sources.yml."""
+        csv_path = os.path.join(test_data_dir, 'sample_customers.csv')
+        workflow = self._make_workflow_with_source(csv_path)
+
+        output_dir = tempfile.mkdtemp()
+        gen = DBTGenerator(output_dir, interactive=False)
+        gen._collect_sources([workflow])
+        gen._generate_sources_yml()
+
+        sources_yml = os.path.join(output_dir, 'models', 'bronze', '_sources.yml')
+        assert os.path.exists(sources_yml), "_sources.yml should be generated"
+
+        with open(sources_yml, 'r') as f:
+            content = f.read()
+
+        assert 'data_type:' in content, (
+            "_sources.yml should contain data_type attributes when a real CSV is provided"
+        )
+        # Verify specific expected types from sample_customers.csv
+        assert 'INTEGER' in content, "customer_id should be inferred as INTEGER"
+        assert 'VARCHAR' in content, "String columns should be inferred as VARCHAR"
+
+    def test_data_type_with_resolved_path(self, test_data_dir):
+        """Test that data_type works when source uses resolved path (not original Alteryx path)."""
+        csv_path = os.path.join(test_data_dir, 'sample_customers.csv')
+        # Simulate an Alteryx workflow pointing to a non-existent Windows path
+        workflow = self._make_workflow_with_source(
+            source_path=r"C:\NonExistent\customers.csv",
+            table_name="customers",
+        )
+
+        output_dir = tempfile.mkdtemp()
+        gen = DBTGenerator(output_dir, interactive=False)
+
+        # Manually resolve the source file (simulates interactive prompt resolution)
+        source_node = workflow.sources[0]
+        schema = gen._get_schema_name(source_node)
+        table = gen._get_table_name(source_node)
+        source_key = f"{schema}.{table}"
+        gen._resolved_source_files[source_key] = csv_path
+
+        # Read columns from the resolved CSV path
+        columns = gen._read_file_columns(csv_path)
+        assert len(columns) > 0
+
+        # Now collect sources - type inference should use the resolved path
+        gen._collect_sources([workflow])
+
+        for s_tables in gen.sources.values():
+            for source_info in s_tables.values():
+                if source_info.columns:
+                    assert len(source_info.column_types) > 0, (
+                        "Column types should be inferred via resolved path even when "
+                        "node.source_path points to a non-existent file"
+                    )
+                    for col in source_info.columns:
+                        assert col in source_info.column_types, (
+                            f"Column '{col}' missing data_type when using resolved path"
+                        )
+
+    def test_inferred_types_are_correct_for_csv(self, generator, test_data_dir):
+        """Test that inferred types from the sample CSV are reasonable."""
+        csv_path = os.path.join(test_data_dir, 'sample_customers.csv')
+        types = generator._infer_file_column_types(csv_path)
+
+        assert types.get('customer_id') == 'INTEGER', "customer_id should be INTEGER"
+        assert types.get('customer_name') == 'VARCHAR', "customer_name should be VARCHAR"
+        assert types.get('email') == 'VARCHAR', "email should be VARCHAR"
+        assert types.get('region') == 'VARCHAR', "region should be VARCHAR"
+        assert types.get('created_date') == 'DATE', "created_date should be DATE"
+        assert types.get('is_active') == 'BOOLEAN', "is_active should be BOOLEAN"
+
+
 class TestErrorHandling:
     """Tests for error handling in column reading."""
 
