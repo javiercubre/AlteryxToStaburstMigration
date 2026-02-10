@@ -101,7 +101,8 @@ class TransformationAnalyzer:
         """Generate a human-readable description of a transformation step."""
         desc_parts = [node.plugin_name]
 
-        if node.category == ToolCategory.INPUT:
+        if node.category == ToolCategory.INPUT or (
+                node.plugin_name == "Dynamic Input/Output" and node.source_path):
             if node.source_path:
                 desc_parts.append(f"from '{node.source_path}'")
             elif node.table_name:
@@ -168,7 +169,8 @@ class TransformationAnalyzer:
 
         sql_template = mapping.get('sql', '-- Custom logic required')
 
-        if node.category == ToolCategory.INPUT:
+        if node.category == ToolCategory.INPUT or (
+                node.plugin_name == "Dynamic Input/Output" and node.source_path):
             if node.table_name:
                 return f"{{{{ source('schema', '{node.table_name}') }}}}"
             elif node.source_path:

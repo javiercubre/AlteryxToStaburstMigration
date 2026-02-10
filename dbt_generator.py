@@ -146,6 +146,18 @@ class DBTGenerator:
             on_missing_dependency=self._handle_missing_column_dependency
         )
 
+    def _is_source_node(self, node: AlteryxNode) -> bool:
+        """Check if a node acts as a data source.
+
+        Returns True for regular INPUT tools as well as Dynamic Input tools
+        that have an associated filename (treated as sources per migration rules).
+        """
+        if node.category == ToolCategory.INPUT:
+            return True
+        if node.plugin_name == "Dynamic Input/Output" and node.source_path:
+            return True
+        return False
+
     def _handle_missing_column_dependency(self, dependency: str, context: str) -> None:
         """Handle missing dependencies reported by ColumnDetector."""
         self._add_todo(
@@ -544,7 +556,7 @@ class DBTGenerator:
             elif node.plugin_name == "Macro Output":
                 output_name = node.annotation or node.configuration.get('Name', f'output_{node.tool_id}')
                 outputs.append({'name': self._sanitize_name(output_name), 'node': node})
-            elif node.category not in [ToolCategory.INPUT, ToolCategory.OUTPUT]:
+            elif not self._is_source_node(node) and node.category != ToolCategory.OUTPUT:
                 transform_nodes.append(node)
 
         # Build macro parameters from inputs
@@ -1198,8 +1210,8 @@ class DBTGenerator:
         upstream_columns = list(dict.fromkeys(upstream_columns))
 
         # Now apply this node's transformation
-        if node.category == ToolCategory.INPUT:
-            # Input nodes: get columns from source
+        if self._is_source_node(node):
+            # Input / Dynamic Input nodes: get columns from source
             columns = self._extract_columns_from_node(node)
 
         elif node.plugin_name == "Select":
@@ -1681,7 +1693,7 @@ class DBTGenerator:
         # Generate bronze models (staging)
         bronze_nodes = medallion.get(MedallionLayer.BRONZE.value, [])
         for node in bronze_nodes:
-            if node.category == ToolCategory.INPUT:
+            if self._is_source_node(node):
                 self._generate_bronze_model(node, workflow_prefix)
 
         # Generate silver models (intermediate) - aggregate sequential transforms
@@ -2053,7 +2065,7 @@ class DBTGenerator:
 
     def _get_model_reference(self, node: AlteryxNode, workflow_prefix: str) -> str:
         """Get the model name to reference for a node."""
-        if node.category == ToolCategory.INPUT:
+        if self._is_source_node(node):
             table = self._get_table_name(node)
             return f"stg_{workflow_prefix}_{table}"
         else:

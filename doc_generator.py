@@ -415,7 +415,8 @@ class DocumentationGenerator:
             label = label[:37] + "..."
 
         # Style based on category
-        if node.category == ToolCategory.INPUT:
+        if node.category == ToolCategory.INPUT or (
+                node.plugin_name == "Dynamic Input/Output" and node.source_path):
             return f'{node_id}[("{label}")]'
         elif node.category == ToolCategory.OUTPUT:
             return f'{node_id}[["{label}"]]'

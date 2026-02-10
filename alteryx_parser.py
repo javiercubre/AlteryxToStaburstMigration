@@ -52,6 +52,13 @@ class AlteryxParser:
         workflow.sources = [n for n in nodes if n.category == ToolCategory.INPUT]
         workflow.targets = [n for n in nodes if n.category == ToolCategory.OUTPUT]
 
+        # Also include Dynamic Input nodes with filenames as sources
+        for n in nodes:
+            if (n.plugin_name == "Dynamic Input/Output"
+                    and n.source_path
+                    and n not in workflow.sources):
+                workflow.sources.append(n)
+
         # Identify macros
         for node in nodes:
             if node.is_macro and node.macro_path:
@@ -315,6 +322,8 @@ class AlteryxParser:
             self._parse_sort_config(config_elem, node, config)
         elif node.plugin_name == "Union":
             self._parse_union_config(config_elem, node, config)
+        elif node.plugin_name == "Dynamic Input/Output":
+            self._parse_dynamic_input_config(config_elem, node, config)
 
         return config
 
@@ -415,6 +424,73 @@ class AlteryxParser:
             config['sql'] = node.sql_query
 
         # Also check for queries in different locations
+        query_alt = config_elem.find('.//Query')
+        if query_alt is not None and query_alt.text:
+            node.sql_query = query_alt.text
+            config['sql'] = node.sql_query
+
+        # Parse RecordInfo/Field elements for column type metadata
+        field_types = {}
+        for record_info in config_elem.findall('.//RecordInfo'):
+            for field_elem in record_info.findall('Field'):
+                fname = field_elem.get('name', '')
+                ftype = field_elem.get('type', '')
+                if fname and ftype:
+                    field_types[fname] = ftype
+        if field_types:
+            config['field_types'] = field_types
+
+    def _parse_dynamic_input_config(self, config_elem: ET.Element, node: AlteryxNode, config: Dict):
+        """Parse Dynamic Input tool configuration to extract source filename.
+
+        Dynamic Input tools read from files whose paths may be specified in the
+        tool configuration or supplied dynamically at runtime.  When a filename
+        is present in the configuration we treat it as a data source so that the
+        migration pipeline generates the appropriate bronze/staging models.
+        """
+        # Check <File> element (same pattern as regular Input Data tools)
+        file_elem = config_elem.find('.//File')
+        if file_elem is not None:
+            file_path = file_elem.text or file_elem.get('OutputFileName', '') or file_elem.get('FileName', '')
+            if file_path:
+                node.source_path = file_path
+                config['file_path'] = file_path
+
+        # Check <FileName> element (text content or attribute)
+        if not node.source_path:
+            filename_elem = config_elem.find('.//FileName')
+            if filename_elem is not None:
+                file_path = filename_elem.text or filename_elem.get('FileName', '')
+                if file_path:
+                    node.source_path = file_path
+                    config['file_path'] = file_path
+
+        # Check <TemplateFile> element
+        if not node.source_path:
+            template_elem = config_elem.find('.//TemplateFile')
+            if template_elem is not None and template_elem.text:
+                node.source_path = template_elem.text
+                config['file_path'] = template_elem.text
+
+        # Connection string (Dynamic Input can also reference databases)
+        conn_elem = config_elem.find('.//Connection')
+        if conn_elem is not None:
+            node.connection_string = conn_elem.text
+            config['connection'] = node.connection_string
+            self._parse_connection_string(node.connection_string, node, config)
+
+        # Table name
+        table_elem = config_elem.find('.//Table')
+        if table_elem is not None:
+            node.table_name = table_elem.text
+            config['table'] = node.table_name
+
+        # SQL query
+        query_elem = config_elem.find('.//SQLStatement')
+        if query_elem is not None and query_elem.text:
+            node.sql_query = query_elem.text
+            config['sql'] = node.sql_query
+
         query_alt = config_elem.find('.//Query')
         if query_alt is not None and query_alt.text:
             node.sql_query = query_alt.text
